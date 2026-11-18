@@ -174,4 +174,6 @@ The library multi-targets **net8.0**, **net9.0** and **net10.0**.
 
 ## License
 
-MIT.
+Apache License 2.0; see [LICENSE](LICENSE).
+
+Version 1.0.0 was released under the MIT License and remains available under those terms.
