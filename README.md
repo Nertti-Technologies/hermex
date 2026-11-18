@@ -170,7 +170,13 @@ dotnet build Hermex.slnx
 dotnet test  tests/Hermex.Tests/Hermex.Tests.csproj
 ```
 
-The library multi-targets **net8.0**, **net9.0** and **net10.0**.
+The library multi-targets **net10.0** and **net11.0**, so it requires .NET 10 or later.
+
+## What's new in 2.0.0
+
+- **Licence:** Hermex is now licensed under the Apache License 2.0. Version 1.0.0 remains available under MIT.
+- **Frameworks:** adds .NET 11 and drops .NET 8 and .NET 9, which reached end of support on 2026-11-10. This is the breaking change.
+- **Security:** the bundled SQLite is updated to fix [GHSA-2m69-gcr7-jv3q](https://github.com/advisories/GHSA-2m69-gcr7-jv3q). Version 1.0.0 carries the vulnerable SQLite on every target, so apps on .NET 8 or .NET 9 that cannot upgrade should reference a patched `Microsoft.Data.Sqlite` themselves.
 
 ## License
 

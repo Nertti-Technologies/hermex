@@ -9,17 +9,10 @@ namespace Hermex.Mime;
 /// </summary>
 public static partial class Rfc2047Decoder
 {
-#if NET8_0_OR_GREATER
     [GeneratedRegex(@"=\?([^?\s]+)\?([BbQq])\?([^?]*)\?=", RegexOptions.CultureInvariant)]
     private static partial Regex EncodedWordRegex();
-#endif
 
-    private static readonly Regex EncodedWord =
-#if NET8_0_OR_GREATER
-        EncodedWordRegex();
-#else
-        new(@"=\?([^?\s]+)\?([BbQq])\?([^?]*)\?=", RegexOptions.Compiled | RegexOptions.CultureInvariant);
-#endif
+    private static readonly Regex EncodedWord = EncodedWordRegex();
 
     /// <summary>
     /// Decodes every encoded-word in <paramref name="value"/>. Whitespace that merely separates

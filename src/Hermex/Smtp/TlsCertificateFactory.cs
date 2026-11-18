@@ -46,10 +46,6 @@ internal static class TlsCertificateFactory
 
         // Round-trip through PKCS#12 so SslStream can use the private key reliably on every OS.
         var pfx = certificate.Export(X509ContentType.Pfx);
-#if NET9_0_OR_GREATER
         return X509CertificateLoader.LoadPkcs12(pfx, null, X509KeyStorageFlags.Exportable);
-#else
-        return new X509Certificate2(pfx, (string?)null, X509KeyStorageFlags.Exportable);
-#endif
     }
 }
