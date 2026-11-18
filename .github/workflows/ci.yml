@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [ main ]
 
+# CI only reads the repository; nothing here needs write access.
+permissions:
+  contents: read
+
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
