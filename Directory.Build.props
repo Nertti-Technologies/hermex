@@ -11,4 +11,11 @@
     <NeutralLanguage>en-US</NeutralLanguage>
   </PropertyGroup>
 
+  <!-- Build gate: the recommended .NET analyzers, and any warning fails the build (including
+       NuGet vulnerability advisories). Intentional opt-outs live in .editorconfig with a reason. -->
+  <PropertyGroup>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+
 </Project>

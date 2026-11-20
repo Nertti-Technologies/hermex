@@ -5,7 +5,7 @@ using Hermex.Sample.Web;
 var builder = WebApplication.CreateBuilder(args);
 
 // Register the in-process SMTP server, mail store, background workers and dashboard.
-builder.Services.AddMail4Dev(options =>
+builder.Services.AddHermex(options =>
 {
     options.SmtpPort = 2525;
     options.ServerHostName = "hermex.sample";
@@ -20,7 +20,7 @@ builder.Services.AddMail4Dev(options =>
 var app = builder.Build();
 
 // Mount the dashboard at /hermex, the API at /hermex/api and the hub at /hermex/hub.
-app.UseMail4Dev();
+app.UseHermex();
 
 // A tiny landing page that sends test mail through the in-process SMTP server.
 app.MapGet("/", () => Results.Content(SamplePages.Landing, "text/html"));

@@ -57,14 +57,18 @@ internal sealed class InboxNotifier : IInboxNotifier
     public Task StatsChangedAsync(MailStats stats) =>
         SafeSendAsync(InboxHub.Events.StatsChanged, stats);
 
+    // Logs are Admin-tier data: only the hub's logs group receives them (see InboxHub.LogsGroup).
     public Task LogAddedAsync(HermexLogEntry entry) =>
-        SafeSendAsync(InboxHub.Events.LogAdded, entry);
+        SafeSendAsync(InboxHub.Events.LogAdded, entry, _hub.Clients.Group(InboxHub.LogsGroup));
 
-    private async Task SafeSendAsync(string eventName, object payload)
+    private Task SafeSendAsync(string eventName, object payload) =>
+        SafeSendAsync(eventName, payload, _hub.Clients.All);
+
+    private async Task SafeSendAsync(string eventName, object payload, IClientProxy clients)
     {
         try
         {
-            await _hub.Clients.All.SendAsync(eventName, payload).ConfigureAwait(false);
+            await clients.SendAsync(eventName, payload).ConfigureAwait(false);
         }
         catch (Exception ex)
         {

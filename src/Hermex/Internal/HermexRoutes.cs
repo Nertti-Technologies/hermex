@@ -11,4 +11,10 @@ internal static class HermexRoutes
 
     /// <summary>SignalR hub endpoint for live inbox updates.</summary>
     public const string Hub = "/hermex/hub";
+
+    /// <summary>
+    /// Header that state-changing API calls must carry when authorization policies are set.
+    /// Sent by <c>hermex.js</c>; keep the two in step.
+    /// </summary>
+    public const string RequestHeader = "X-Hermex-Request";
 }

@@ -1,23 +1,21 @@
 using System.Text.Json;
 using Hermex.Imap;
+using Hermex.Internal;
 using Hermex.Smtp;
 using Hermex.Storage;
 using Microsoft.Extensions.Logging;
 
 namespace Hermex.Configuration;
 
-/// <summary>The outcome of a settings update.</summary>
-internal sealed record SettingsUpdateResult(bool Success, bool ListenerRestarted, string? Error)
-{
-    public static SettingsUpdateResult Ok(bool restarted) => new(true, restarted, null);
-    public static SettingsUpdateResult Invalid(string error) => new(false, false, error);
-}
-
 /// <summary>
 /// Reads, validates, applies and persists the runtime-editable <see cref="HermexSettings"/>.
-/// Port changes re-bind the affected listener live, with no host restart.
+/// Port changes re-bind the affected listener live, with no host restart. Every change, from the
+/// dashboard, from host code or from the database at startup, passes the
+/// <see cref="HermexOptions.AllowRuntimeSettings"/> lock, validation and the settings hooks.
 /// </summary>
-internal sealed class HermexSettingsService
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1001:Types that own disposable fields should be disposable",
+    Justification = "SemaphoreSlim holds no unmanaged resource unless AvailableWaitHandle is used; disposing it at shutdown would make an in-flight update throw.")]
+internal sealed class HermexSettingsService : IHermexSettings
 {
     private const string SettingsKey = "hermex.settings";
 
@@ -25,20 +23,33 @@ internal sealed class HermexSettingsService
     private readonly IMailStore _store;
     private readonly SmtpServerService _smtpServer;
     private readonly ImapServerService _imapServer;
+    private readonly HermexEventDispatcher _events;
     private readonly ILogger<HermexSettingsService> _logger;
     private readonly object _gate = new();
+
+    // One change at a time: a change reads the current settings, awaits the hooks, persists and
+    // applies, so overlapping changes would persist one and apply another.
+    private readonly SemaphoreSlim _updateLock = new(1, 1);
+
+    // Identifies the running change on its async flow. The lock is not re-entrant, so a settings
+    // hook that calls UpdateAsync would otherwise wait on itself forever. A token (not a bool) so
+    // work a hook forks, which inherits the flow, is not refused once that change has finished.
+    private readonly AsyncLocal<object?> _updateFlow = new();
+    private object? _activeUpdate;
 
     public HermexSettingsService(
         HermexOptions options,
         IMailStore store,
         SmtpServerService smtpServer,
         ImapServerService imapServer,
+        HermexEventDispatcher events,
         ILogger<HermexSettingsService> logger)
     {
         _options = options;
         _store = store;
         _smtpServer = smtpServer;
         _imapServer = imapServer;
+        _events = events;
         _logger = logger;
     }
 
@@ -70,10 +81,18 @@ internal sealed class HermexSettingsService
 
     /// <summary>
     /// Loads persisted settings and applies them to the live options. Called at startup,
-    /// before the listeners bind, so no restart is needed.
+    /// before the listeners bind, so no restart is needed. When the host has turned runtime
+    /// settings off, the stored row is ignored but kept, so turning them back on restores it.
     /// </summary>
     public async Task LoadPersistedAsync(CancellationToken cancellationToken = default)
     {
+        if (!_options.AllowRuntimeSettings)
+        {
+            _logger.LogInformation(
+                "Hermex ignored any persisted runtime settings because HermexOptions.AllowRuntimeSettings is false.");
+            return;
+        }
+
         try
         {
             var stored = await _store.GetSettingsAsync(cancellationToken).ConfigureAwait(false);
@@ -81,14 +100,27 @@ internal sealed class HermexSettingsService
                 return;
 
             var settings = JsonSerializer.Deserialize<HermexSettings>(json);
-            if (settings is null || Validate(settings) is not null)
-                return;
-
-            lock (_gate)
+            if (settings is null)
             {
-                ApplyToOptions(settings);
+                _logger.LogWarning("Hermex skipped the persisted runtime settings because they are empty.");
+                return;
             }
-            _logger.LogInformation("Hermex applied persisted runtime settings.");
+
+            var result = await ApplyAsync(settings, HermexSettingsChangeSource.Persisted, cancellationToken)
+                .ConfigureAwait(false);
+            switch (result.Status)
+            {
+                case HermexSettingsUpdateStatus.Saved:
+                    _logger.LogInformation("Hermex applied persisted runtime settings.");
+                    break;
+                case HermexSettingsUpdateStatus.Rejected:
+                    _logger.LogWarning("Hermex skipped the persisted runtime settings because a host hook rejected them.");
+                    break;
+                default:
+                    _logger.LogWarning("Hermex skipped the persisted runtime settings because they are invalid: {Error}",
+                        result.Error);
+                    break;
+            }
         }
         catch (Exception ex)
         {
@@ -96,25 +128,94 @@ internal sealed class HermexSettingsService
         }
     }
 
+    /// <inheritdoc />
+    public Task<HermexSettingsUpdateResult> UpdateAsync(HermexSettings settings,
+        CancellationToken cancellationToken = default) =>
+        UpdateAsync(settings, HermexSettingsChangeSource.Api, cancellationToken);
+
     /// <summary>Validates, applies and persists settings, re-binding any listener whose port changed.</summary>
-    public async Task<SettingsUpdateResult> UpdateAsync(HermexSettings settings,
-        CancellationToken cancellationToken = default)
+    public async Task<HermexSettingsUpdateResult> UpdateAsync(HermexSettings settings,
+        HermexSettingsChangeSource source, CancellationToken cancellationToken = default)
     {
-        var error = Validate(settings);
+        ArgumentNullException.ThrowIfNull(settings);
+
+        if (!_options.AllowRuntimeSettings)
+            return HermexSettingsUpdateResult.Locked();
+
+        return await ApplyAsync(settings, source, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Validates, runs the hooks and applies <paramref name="settings"/>. Persists and re-binds
+    /// listeners for live changes; at startup (<see cref="HermexSettingsChangeSource.Persisted"/>)
+    /// the stored row is already there and the listeners have not bound yet.
+    /// </summary>
+    private async Task<HermexSettingsUpdateResult> ApplyAsync(HermexSettings settings,
+        HermexSettingsChangeSource source, CancellationToken cancellationToken)
+    {
+        if (_updateFlow.Value is { } flow && ReferenceEquals(flow, Volatile.Read(ref _activeUpdate)))
+        {
+            throw new InvalidOperationException(
+                "A settings hook cannot update settings; change HermexSettingsChangingContext.Proposed instead.");
+        }
+
+        await _updateLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var token = new object();
+            Volatile.Write(ref _activeUpdate, token);
+            _updateFlow.Value = token;
+            return await ApplyLockedAsync(settings, source, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            Volatile.Write(ref _activeUpdate, null);
+            _updateLock.Release();
+        }
+    }
+
+    private async Task<HermexSettingsUpdateResult> ApplyLockedAsync(HermexSettings settings,
+        HermexSettingsChangeSource source, CancellationToken cancellationToken)
+    {
+        // Work on a copy so a hook never mutates the caller's object.
+        var proposed = settings.Clone();
+        var error = Validate(proposed);
         if (error is not null)
-            return SettingsUpdateResult.Invalid(error);
+            return HermexSettingsUpdateResult.Invalid(error);
+
+        var previous = GetCurrent();
+        var changing = new HermexSettingsChangingContext
+        {
+            Current = previous.Clone(),
+            Proposed = proposed,
+            Source = source,
+            HttpContext = _events.HttpContext,
+            CancellationToken = cancellationToken,
+        };
+        if (!await _events.SettingsChangingAsync(changing).ConfigureAwait(false))
+            return HermexSettingsUpdateResult.Rejected(changing.RejectionReason!);
+
+        // The hook may have changed the proposal.
+        error = Validate(proposed);
+        if (error is not null)
+            return HermexSettingsUpdateResult.Invalid(error);
+
+        // Persist first: if saving fails, the live options are left as they were.
+        if (source != HermexSettingsChangeSource.Persisted)
+        {
+            await _store.SaveSettingsAsync(
+                new Dictionary<string, string> { [SettingsKey] = JsonSerializer.Serialize(proposed) },
+                cancellationToken).ConfigureAwait(false);
+        }
 
         bool smtpRestart, imapRestart;
         lock (_gate)
         {
-            smtpRestart = settings.SmtpPort != _options.SmtpPort;
-            imapRestart = settings.ImapPort != _options.ImapPort || settings.EnableImap != _options.EnableImap;
-            ApplyToOptions(settings);
+            var live = source != HermexSettingsChangeSource.Persisted;
+            smtpRestart = live && proposed.SmtpPort != _options.SmtpPort;
+            imapRestart = live && (proposed.ImapPort != _options.ImapPort || proposed.EnableImap != _options.EnableImap);
+            ApplyToOptions(proposed);
         }
-
-        await _store.SaveSettingsAsync(
-            new Dictionary<string, string> { [SettingsKey] = JsonSerializer.Serialize(settings) },
-            cancellationToken).ConfigureAwait(false);
 
         if (smtpRestart)
         {
@@ -127,7 +228,17 @@ internal sealed class HermexSettingsService
             _imapServer.RequestRestart();
         }
 
-        return SettingsUpdateResult.Ok(smtpRestart || imapRestart);
+        await _events.SettingsChangedAsync(new HermexSettingsChangedContext
+        {
+            Previous = previous,
+            Current = GetCurrent(),
+            Source = source,
+            ListenerRestarted = smtpRestart || imapRestart,
+            HttpContext = _events.HttpContext,
+            CancellationToken = cancellationToken,
+        }).ConfigureAwait(false);
+
+        return HermexSettingsUpdateResult.Saved(smtpRestart || imapRestart);
     }
 
     private void ApplyToOptions(HermexSettings settings)
@@ -153,7 +264,7 @@ internal sealed class HermexSettingsService
         _options.Relay.Port = settings.RelayPort;
     }
 
-    private static string? Validate(HermexSettings s)
+    private string? Validate(HermexSettings s)
     {
         if (s.SmtpPort is < 1 or > 65535)
             return "SMTP port must be between 1 and 65535.";
@@ -173,6 +284,8 @@ internal sealed class HermexSettingsService
             return "A relay host is required when relay is enabled.";
         if (s.RelayEnabled && s.RelayPort is < 1 or > 65535)
             return "The relay port must be between 1 and 65535.";
+        if (s.RelayEnabled && !_options.Relay.IsHostAllowed(s.RelayHost))
+            return "The relay host is not in the host application's list of allowed relay hosts.";
         return null;
     }
 }

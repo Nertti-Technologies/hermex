@@ -1,6 +1,8 @@
 @page "/hermex/settings"
+@inject Hermex.HermexOptions HermexOptions
 @{
     ViewData["Title"] = "Settings";
+    var editable = HermexOptions.AllowRuntimeSettings;
 }
 
 <div class="m4d-page">
@@ -72,11 +74,22 @@
         <header class="m4d-card__head">
             <h2 class="m4d-card__title">Server configuration</h2>
         </header>
-        <p class="m4d-card__lead">
-            Saved to the database and applied immediately. Changing a port re-binds that
-            listener live — no host restart required.
-        </p>
+        @if (editable)
+        {
+            <p class="m4d-card__lead">
+                Saved to the database and applied immediately. Changing a port re-binds that
+                listener live — no host restart required.
+            </p>
+        }
+        else
+        {
+            <p class="m4d-card__lead">
+                Configured by the host application. These are the effective values; they cannot
+                be changed from the dashboard.
+            </p>
+        }
 
+        <fieldset class="m4d-fieldset" disabled="@(!editable)">
         <div class="m4d-form__grid">
             <div class="m4d-field">
                 <label for="set-smtpPort">SMTP port</label>
@@ -134,12 +147,16 @@
                 <label class="m4d-check"><input type="checkbox" id="set-relayAutomatic" /> Relay every captured message automatically</label>
             </div>
         </div>
+        </fieldset>
 
-        <div class="m4d-form__actions">
-            <button type="button" class="m4d-btn m4d-btn--primary" id="m4d-settings-save">Save settings</button>
-            <button type="button" class="m4d-btn" id="m4d-settings-reload">Reset</button>
-            <span class="m4d-form__status" id="m4d-settings-result"></span>
-        </div>
+        @if (editable)
+        {
+            <div class="m4d-form__actions">
+                <button type="button" class="m4d-btn m4d-btn--primary" id="m4d-settings-save">Save settings</button>
+                <button type="button" class="m4d-btn" id="m4d-settings-reload">Reset</button>
+                <span class="m4d-form__status" id="m4d-settings-result"></span>
+            </div>
+        }
     </section>
 </div>
 

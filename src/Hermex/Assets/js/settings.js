@@ -148,8 +148,11 @@
 
     /* ---------- wiring ---------- */
     M.ready(function () {
-        document.getElementById('m4d-settings-save').addEventListener('click', saveSettings);
-        document.getElementById('m4d-settings-reload').addEventListener('click', loadSettings);
+        // Save/Reset are not rendered when the host has locked runtime settings.
+        var save = document.getElementById('m4d-settings-save');
+        var reload = document.getElementById('m4d-settings-reload');
+        if (save) save.addEventListener('click', saveSettings);
+        if (reload) reload.addEventListener('click', loadSettings);
 
         M.onHub('status', applyStatus);
         M.onHub('poll', function () { M.refreshStatus(); });

@@ -27,7 +27,7 @@ public enum HermexTlsMode
 
 /// <summary>
 /// Configuration for the in-process Hermex SMTP server and dashboard.
-/// Configure it through the <c>AddMail4Dev(options =&gt; ...)</c> callback.
+/// Configure it through the <c>AddHermex(options =&gt; ...)</c> callback.
 /// </summary>
 public sealed class HermexOptions
 {
@@ -158,7 +158,7 @@ public sealed class HermexOptions
 
     // ----------------------------------------------------------------- Dashboard
 
-    /// <summary>Whether the web dashboard, API and SignalR hub are wired up by <c>UseMail4Dev()</c>. Default <c>true</c>.</summary>
+    /// <summary>Whether the web dashboard, API and SignalR hub are wired up by <c>UseHermex()</c>. Default <c>true</c>.</summary>
     public bool EnableDashboard { get; set; } = true;
 
     /// <summary>The product name shown in the dashboard header and browser title.</summary>
@@ -169,6 +169,23 @@ public sealed class HermexOptions
 
     /// <summary>Number of messages shown per page in the dashboard inbox. Default <c>50</c>.</summary>
     public int DashboardPageSize { get; set; } = 50;
+
+    // ----------------------------------------------------------------- Host control
+
+    /// <summary>
+    /// Whether the dashboard Settings page and <see cref="IHermexSettings"/> may change settings at
+    /// runtime, and whether settings saved by an earlier run are re-applied at startup. Default
+    /// <c>true</c>. Set <c>false</c> to make the options configured in code final: stored settings
+    /// are then ignored (but kept), and updates are refused with
+    /// <see cref="HermexSettingsUpdateStatus.Locked"/>.
+    /// </summary>
+    public bool AllowRuntimeSettings { get; set; } = true;
+
+    /// <summary>Authorization policies for the dashboard, API and hub. No policies by default.</summary>
+    public HermexAuthorizationOptions Authorization { get; } = new();
+
+    /// <summary>Hooks to veto or audit sensitive actions. No-ops by default.</summary>
+    public HermexEvents Events { get; } = new();
 
     // ----------------------------------------------------------------- Helpers
 

@@ -130,7 +130,7 @@ public sealed class MimeMessage
         return null;
     }
 
-    private IReadOnlyList<MimeAttachment> CollectAttachments()
+    private List<MimeAttachment> CollectAttachments()
     {
         var list = new List<MimeAttachment>();
         var index = 0;

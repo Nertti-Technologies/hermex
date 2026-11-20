@@ -16,9 +16,9 @@ internal static class HermexAssetEndpoints
     private const string ResourcePrefix = "Hermex.Assets.";
     private static readonly Assembly Assembly = typeof(HermexAssetEndpoints).Assembly;
 
-    public static void MapHermexAssets(IEndpointRouteBuilder endpoints)
+    public static void MapHermexAssets(IEndpointRouteBuilder endpoints, HermexAuthorizationOptions authorization)
     {
-        endpoints.MapGet(HermexRoutes.Base + "/assets/{**assetPath}",
+        var assets = endpoints.MapGet(HermexRoutes.Base + "/assets/{**assetPath}",
             (string assetPath, HttpResponse response) =>
             {
                 if (string.IsNullOrWhiteSpace(assetPath) || assetPath.Contains("..", StringComparison.Ordinal))
@@ -32,6 +32,13 @@ internal static class HermexAssetEndpoints
                 response.Headers.CacheControl = "no-cache";
                 return Results.Stream(stream, ContentTypeFor(assetPath));
             });
+
+        // Embedded CSS/JS/icons hold no mail: tagged Viewer, but Hermex adds no requirement unless
+        // the host asks (a host FallbackPolicy still applies).
+        if (authorization.AllowAnonymousAssets)
+            assets.WithMetadata(new HermexEndpointMetadata(HermexEndpointTier.Viewer));
+        else
+            assets.WithHermexTier(HermexEndpointTier.Viewer, authorization);
     }
 
     private static string ContentTypeFor(string path)

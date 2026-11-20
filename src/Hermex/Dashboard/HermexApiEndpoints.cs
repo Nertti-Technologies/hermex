@@ -15,9 +15,15 @@ namespace Hermex.Dashboard;
 /// </summary>
 internal static class HermexApiEndpoints
 {
-    public static void MapHermexApi(IEndpointRouteBuilder endpoints)
+    public static void MapHermexApi(IEndpointRouteBuilder endpoints, HermexAuthorizationOptions authorization)
     {
         var api = endpoints.MapGroup(HermexRoutes.ApiBase);
+        if (authorization.IsEnabled)
+            api.AddEndpointFilter(HermexEndpointAuthorization.RequireRequestHeader);
+
+        const HermexEndpointTier Viewer = HermexEndpointTier.Viewer;
+        const HermexEndpointTier Manager = HermexEndpointTier.Manager;
+        const HermexEndpointTier Admin = HermexEndpointTier.Admin;
 
         // ---- inbox listing -------------------------------------------------
         api.MapGet("/messages", async (
@@ -33,11 +39,12 @@ internal static class HermexApiEndpoints
                 MailboxId = mailbox,
             });
             return Results.Json(result);
-        });
+        }).WithHermexTier(Viewer, authorization);
 
         // ---- mailboxes -----------------------------------------------------
         api.MapGet("/mailboxes", async (IMailStore store) =>
-            Results.Json(await store.GetMailboxesAsync()));
+            Results.Json(await store.GetMailboxesAsync()))
+            .WithHermexTier(Viewer, authorization);
 
         // ---- message detail (also marks the message read) ------------------
         api.MapGet("/messages/{id:long}", async (long id, IMailStore store, IInboxNotifier notifier) =>
@@ -53,16 +60,23 @@ internal static class HermexApiEndpoints
             }
 
             return Results.Json(detail);
-        });
+        }).WithHermexTier(Viewer, authorization);
 
         // ---- rendered HTML body (cid: links rewritten to attachment URLs) --
-        api.MapGet("/messages/{id:long}/html", async (long id, IMailStore store) =>
+        api.MapGet("/messages/{id:long}/html", async (long id, IMailStore store, HttpResponse response) =>
         {
             var detail = await store.GetMessageAsync(id);
             if (detail?.HtmlBody is null)
                 return Results.NotFound();
+
+            // The body is sender-controlled HTML served from the dashboard's origin. The dashboard
+            // frames it with sandbox="", but opened directly in a tab its scripts would run as the
+            // signed-in user. The CSP sandbox gives it an opaque origin with scripts off either way;
+            // images and styles still load, so the preview looks the same.
+            response.Headers.ContentSecurityPolicy = "sandbox";
+            response.Headers.XContentTypeOptions = "nosniff";
             return Results.Content(RewriteCidLinks(id, detail), "text/html; charset=utf-8");
-        });
+        }).WithHermexTier(Viewer, authorization);
 
         // ---- raw .eml download --------------------------------------------
         api.MapGet("/messages/{id:long}/raw", async (long id, IMailStore store) =>
@@ -71,7 +85,7 @@ internal static class HermexApiEndpoints
             return raw is null
                 ? Results.NotFound()
                 : Results.File(raw, "message/rfc822", $"hermex-message-{id}.eml");
-        });
+        }).WithHermexTier(Viewer, authorization);
 
         // ---- attachment / inline resource download ------------------------
         api.MapGet("/messages/{id:long}/attachments/{index:int}", async (long id, int index, IMailStore store) =>
@@ -88,7 +102,7 @@ internal static class HermexApiEndpoints
                 : attachment.Info.FileName;
 
             return Results.File(attachment.Content, contentType, fileName);
-        });
+        }).WithHermexTier(Viewer, authorization);
 
         // ---- mark read / unread -------------------------------------------
         api.MapPost("/messages/{id:long}/read", async (long id, bool? isRead, IMailStore store, IInboxNotifier notifier) =>
@@ -98,7 +112,7 @@ internal static class HermexApiEndpoints
                 return Results.NotFound();
             await notifier.MessageUpdatedAsync(id, target);
             return Results.Ok(new { id, isRead = target });
-        });
+        }).WithHermexTier(Viewer, authorization);
 
         // ---- relay a message to the configured upstream SMTP server -------
         api.MapPost("/messages/{id:long}/relay", async (long id, IMailRelayService relay) =>
@@ -107,34 +121,61 @@ internal static class HermexApiEndpoints
                 return Results.BadRequest(new { error = "Relay is not enabled." });
 
             var result = await relay.RelayAsync(id);
-            return result.Success
-                ? Results.Ok(new { id, relayed = true })
+            if (result.Success)
+                return Results.Ok(new { id, relayed = true });
+            return result.Rejected
+                ? Forbidden(result.Error)
                 : Results.Problem(result.Error ?? "Relay failed.");
-        });
+        }).WithHermexTier(Manager, authorization);
 
         // ---- delete a single message --------------------------------------
-        api.MapDelete("/messages/{id:long}", async (long id, IMailStore store, IInboxNotifier notifier) =>
+        api.MapDelete("/messages/{id:long}", async (long id, IMailStore store, IInboxNotifier notifier,
+            HermexEventDispatcher events) =>
         {
+            var deleting = new HermexDeletingContext
+            {
+                MessageId = id,
+                HttpContext = events.HttpContext,
+                CancellationToken = events.HttpContext?.RequestAborted ?? CancellationToken.None,
+            };
+            if (!await events.DeletingAsync(deleting))
+                return Forbidden(deleting.RejectionReason);
+
             if (!await store.DeleteMessageAsync(id))
                 return Results.NotFound();
             await notifier.MessageDeletedAsync(id);
             await notifier.StatsChangedAsync(await store.GetStatsAsync());
             return Results.Ok(new { id });
-        });
+        }).WithHermexTier(Manager, authorization);
 
         // ---- clear the whole inbox ----------------------------------------
-        api.MapDelete("/messages", async (IMailStore store, IInboxNotifier notifier) =>
+        api.MapDelete("/messages", async (IMailStore store, IInboxNotifier notifier, HermexEventDispatcher events) =>
         {
+            var deleting = new HermexDeletingContext
+            {
+                MessageId = null,
+                HttpContext = events.HttpContext,
+                CancellationToken = events.HttpContext?.RequestAborted ?? CancellationToken.None,
+            };
+            if (!await events.DeletingAsync(deleting))
+                return Forbidden(deleting.RejectionReason);
+
             var cleared = await store.ClearMessagesAsync();
             await notifier.InboxClearedAsync();
             await notifier.StatsChangedAsync(await store.GetStatsAsync());
             return Results.Ok(new { cleared });
-        });
+        }).WithHermexTier(Manager, authorization);
 
         // ---- server status, statistics and effective options --------------
-        api.MapGet("/status", async (IMailStore store, HermexRuntimeState state, HermexOptions options) =>
+        api.MapGet("/status", async (HttpContext http, IMailStore store, HermexRuntimeState state,
+            HermexOptions options) =>
         {
             var stats = await store.GetStatsAsync();
+
+            // Server paths and raw error text are Admin-tier detail; Viewers get null.
+            var showServerDetail =
+                await HermexEndpointAuthorization.IsAuthorizedForTierAsync(http, authorization, Admin);
+
             return Results.Json(new
             {
                 server = new
@@ -149,8 +190,8 @@ internal static class HermexApiEndpoints
                     imapListeningPort = state.ImapListeningPort,
                     startedAtUtc = state.StartedAtUtc,
                     uptimeSeconds = (long)state.Uptime.TotalSeconds,
-                    databasePath = state.DatabasePath,
-                    lastError = state.LastError,
+                    databasePath = showServerDetail ? state.DatabasePath : null,
+                    lastError = showServerDetail ? state.LastError : null,
                     acceptedConnections = state.AcceptedConnections,
                     activeConnections = state.ActiveConnections,
                     messagesReceived = state.MessagesReceived,
@@ -168,35 +209,46 @@ internal static class HermexApiEndpoints
                     relayEnabled = options.Relay.Enabled,
                     enableImap = options.EnableImap,
                     imapPort = options.ImapPort,
+                    allowRuntimeSettings = options.AllowRuntimeSettings,
                 },
             });
-        });
+        }).WithHermexTier(Viewer, authorization);
 
         // ---- diagnostic logs ----------------------------------------------
         api.MapGet("/logs", async (int? limit, IMailStore store) =>
         {
             var logs = await store.GetLogsAsync(limit ?? 200);
             return Results.Json(logs);
-        });
+        }).WithHermexTier(Admin, authorization);
 
         api.MapDelete("/logs", async (IMailStore store) =>
         {
             var cleared = await store.ClearLogsAsync();
             return Results.Ok(new { cleared });
-        });
+        }).WithHermexTier(Admin, authorization);
 
         // ---- runtime-editable settings ------------------------------------
         api.MapGet("/settings", (HermexSettingsService settings) =>
-            Results.Json(settings.GetCurrent()));
+            Results.Json(settings.GetCurrent()))
+            .WithHermexTier(Admin, authorization);
 
         api.MapPut("/settings", async (HermexSettings update, HermexSettingsService settings) =>
         {
-            var result = await settings.UpdateAsync(update);
-            return result.Success
-                ? Results.Ok(new { saved = true, listenerRestarted = result.ListenerRestarted })
-                : Results.BadRequest(new { error = result.Error });
-        });
+            var result = await settings.UpdateAsync(update, HermexSettingsChangeSource.Dashboard);
+            return result.Status switch
+            {
+                HermexSettingsUpdateStatus.Saved =>
+                    Results.Ok(new { saved = true, listenerRestarted = result.ListenerRestarted }),
+                HermexSettingsUpdateStatus.Invalid => Results.BadRequest(new { error = result.Error }),
+                _ => Forbidden(result.Error),
+            };
+        }).WithHermexTier(Admin, authorization);
     }
+
+    /// <summary>403 with a JSON reason, for actions the host locked or a hook rejected.</summary>
+    private static IResult Forbidden(string? reason) =>
+        Results.Json(new { error = reason ?? "Forbidden by the host application." },
+            statusCode: StatusCodes.Status403Forbidden);
 
     /// <summary>Rewrites <c>cid:</c> references in an HTML body to inline-attachment URLs.</summary>
     private static string RewriteCidLinks(long messageId, MessageDetail detail)

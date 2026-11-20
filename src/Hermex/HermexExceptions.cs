@@ -1,3 +1,5 @@
+using System.Net.Sockets;
+
 namespace Hermex;
 
 /// <summary>Base type for all exceptions raised by Hermex.</summary>
@@ -21,7 +23,7 @@ public sealed class HermexConfigurationException : HermexException
 public sealed class HermexPortConflictException : HermexException
 {
     public HermexPortConflictException(int configuredPort, IReadOnlyList<int> probedPorts, Exception? innerException)
-        : base(BuildMessage(configuredPort, probedPorts), innerException ?? new Exception("Address already in use."))
+        : base(BuildMessage(configuredPort, probedPorts), innerException ?? new SocketException((int)SocketError.AddressAlreadyInUse))
     {
         ConfiguredPort = configuredPort;
         ProbedPorts = probedPorts;

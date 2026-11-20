@@ -13,6 +13,11 @@ namespace Hermex.Imap;
 /// </summary>
 internal sealed class ImapSession
 {
+    // FETCH macros (RFC 3501 §6.4.5).
+    private static readonly string[] FetchAllMacro = { "FLAGS", "INTERNALDATE", "RFC822.SIZE", "ENVELOPE" };
+    private static readonly string[] FetchFastMacro = { "FLAGS", "INTERNALDATE", "RFC822.SIZE" };
+    private static readonly string[] FetchFullMacro = { "FLAGS", "INTERNALDATE", "RFC822.SIZE", "ENVELOPE", "BODY" };
+
     private const string Capabilities = "IMAP4rev1 AUTH=PLAIN";
     private const int MaxLiteralBytes = 32 * 1024 * 1024;
     private static readonly TimeSpan IdleTimeout = TimeSpan.FromMinutes(30);
@@ -430,7 +435,7 @@ internal sealed class ImapSession
     private bool willAnyMarkSeen(IReadOnlyList<MailboxMessageInfo> targets, List<string> items)
         => !_readOnly && items.Any(IsNonPeekBodyItem) && targets.Any(m => !m.IsSeen);
 
-    private void WriteFetchItem(MemoryStream buffer, string item, MailboxMessageInfo message, bool seen,
+    private static void WriteFetchItem(MemoryStream buffer, string item, MailboxMessageInfo message, bool seen,
         byte[]? raw, MimeMessage? parsed)
     {
         var upper = item.ToUpperInvariant();
@@ -710,13 +715,13 @@ internal sealed class ImapSession
             switch (item.ToUpperInvariant())
             {
                 case "ALL":
-                    expanded.AddRange(new[] { "FLAGS", "INTERNALDATE", "RFC822.SIZE", "ENVELOPE" });
+                    expanded.AddRange(FetchAllMacro);
                     break;
                 case "FAST":
-                    expanded.AddRange(new[] { "FLAGS", "INTERNALDATE", "RFC822.SIZE" });
+                    expanded.AddRange(FetchFastMacro);
                     break;
                 case "FULL":
-                    expanded.AddRange(new[] { "FLAGS", "INTERNALDATE", "RFC822.SIZE", "ENVELOPE", "BODY" });
+                    expanded.AddRange(FetchFullMacro);
                     break;
                 default:
                     expanded.Add(item);

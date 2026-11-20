@@ -11,6 +11,8 @@ namespace Hermex.Storage;
 /// when the queue is full, <see cref="Submit"/> reports <see cref="MailSubmissionResult.QueueFull"/>
 /// and the SMTP client receives a "try again later" reply.
 /// </summary>
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Naming", "CA1711:Identifiers should not have incorrect suffix",
+    Justification = "It is a queue, and the type is public since 1.0; renaming would break hosts.")]
 public sealed class MailWriteQueue : IReceivedMailSink
 {
     private readonly Channel<ReceivedMessage> _messages;

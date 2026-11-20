@@ -1,0 +1,13 @@
+root = true
+
+# Analyzer opt-outs. Each one is deliberate; record the reason here when adding one.
+[*.cs]
+# Hermex logs startup, lifecycle and failure events, which are rare. The per-event path
+# (HermexEventLog) already uses cached LoggerMessage.Define delegates. Revisit if logging is
+# added to a per-message or per-connection path.
+dotnet_diagnostic.CA1848.severity = none
+dotnet_diagnostic.CA1873.severity = none
+
+[tests/**.cs]
+# xUnit test names use underscores to read as sentences.
+dotnet_diagnostic.CA1707.severity = none
