@@ -1,5 +1,6 @@
 using System.Net.Security;
 using System.Net.Sockets;
+using System.Security.Authentication;
 using System.Text;
 
 namespace Hermex.Smtp;
@@ -50,13 +51,25 @@ internal static class SmtpRelayClient
         {
             await conversation.CommandAsync("STARTTLS", 220, ct).ConfigureAwait(false);
 
+            // When validating, accept exactly what the built-in check accepts (no policy errors),
+            // but keep the verdict: the handshake exception's text differs by OS and on Linux
+            // does not say the certificate was the problem.
+            var certificateErrors = SslPolicyErrors.None;
             var ssl = new SslStream(stream, leaveInnerStreamOpen: false);
-            await ssl.AuthenticateAsClientAsync(new SslClientAuthenticationOptions
+            try
             {
-                TargetHost = relay.Host,
-                // null = the normal .NET validation (trusted chain, matching host name).
-                RemoteCertificateValidationCallback = relay.ValidateCertificate ? null : AcceptAnyCertificate,
-            }, ct).ConfigureAwait(false);
+                await ssl.AuthenticateAsClientAsync(new SslClientAuthenticationOptions
+                {
+                    TargetHost = relay.Host,
+                    RemoteCertificateValidationCallback = relay.ValidateCertificate
+                        ? (_, _, _, errors) => (certificateErrors = errors) == SslPolicyErrors.None
+                        : AcceptAnyCertificate,
+                }, ct).ConfigureAwait(false);
+            }
+            catch (AuthenticationException ex) when (certificateErrors != SslPolicyErrors.None)
+            {
+                throw new HermexException($"The relay server's TLS certificate was not accepted ({certificateErrors}).", ex);
+            }
             stream = ssl;
             conversation = new RelayConversation(stream);
             await conversation.EhloAsync(ct).ConfigureAwait(false);
