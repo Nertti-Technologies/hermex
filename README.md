@@ -12,8 +12,8 @@ service registration and one middleware call, and every message your app sends b
 inspectable in a polished, real-time dashboard — or in a real mail client over IMAP.
 
 ```csharp
-builder.Services.AddMail4Dev();
-app.UseMail4Dev();
+builder.Services.AddHermex();
+app.UseHermex();
 ```
 
 Point your application's mail client at `localhost:2525` and open `/hermex`.
@@ -30,8 +30,9 @@ container. Hermex runs **inside your application** as a set of background servic
 - **No impact on application performance** — the SMTP/IMAP listeners and storage run on
   background threads; your request pipeline never touches the mail store.
 
-> The registration methods are `AddMail4Dev()` and `UseMail4Dev()` by design — the original,
-> familiar API surface — even though the package and namespace are `Hermex`.
+> **Upgrading from 2.0?** The registration methods are now `AddHermex()` and `UseHermex()`.
+> The earlier names `AddMail4Dev()` and `UseMail4Dev()` still work exactly as before, so no code
+> change is needed today; they will be deprecated in a future release.
 
 ## Features
 
@@ -63,7 +64,7 @@ Add a project or package reference to `Hermex`, then register it.
 ```csharp
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Services.AddMail4Dev(options =>
+builder.Services.AddHermex(options =>
 {
     options.SmtpPort = 2525;
     options.EnableImap = true;     // optional — expose captured mail over IMAP
@@ -72,7 +73,7 @@ builder.Services.AddMail4Dev(options =>
 
 var app = builder.Build();
 
-app.UseMail4Dev();   // dashboard at /hermex, API at /hermex/api, hub at /hermex/hub
+app.UseHermex();   // dashboard at /hermex, API at /hermex/api, hub at /hermex/hub
 
 app.Run();
 ```
@@ -88,7 +89,7 @@ any generic host.
 
 ## Configuration
 
-All configuration is done through the `AddMail4Dev` callback.
+All configuration is done through the `AddHermex` callback.
 
 | Option | Default | Description |
 | --- | --- | --- |
@@ -128,7 +129,7 @@ builder.Services.AddAuthorization(o =>
     o.AddPolicy("ManageConfiguration", p => p.RequireRole("admin"));
 });
 
-builder.Services.AddMail4Dev(o =>
+builder.Services.AddHermex(o =>
 {
     o.SmtpPort = 2525;
     o.ListenAddress = "loopback";              // SMTP only for the app on this machine
@@ -150,14 +151,14 @@ builder.Services.AddMail4Dev(o =>
 var app = builder.Build();
 app.UseAuthentication();
 app.UseAuthorization();
-app.UseMail4Dev();
+app.UseHermex();
 ```
 
 - **Tiers.** A tier left `null` uses the policy of the tier below it, so Settings and Logs are
   never less protected than the inbox. With no policies at all, nothing changes.
 - **Endpoint metadata.** Every Hermex endpoint carries `HermexEndpointMetadata(Tier)`, so your own
   middleware or policies can target tiers instead of URLs.
-- **Startup checks.** `UseMail4Dev()` throws `HermexConfigurationException` if a policy name is not
+- **Startup checks.** `UseHermex()` throws `HermexConfigurationException` if a policy name is not
   registered or there is no authentication scheme to challenge with.
 - **Scripting the API.** Once a policy is set, POST/PUT/DELETE calls to `/hermex/api` must send the
   header `X-Hermex-Request: 1` (the dashboard does). This stops other sites from triggering them
@@ -170,6 +171,8 @@ app.UseMail4Dev();
   is delivered from a bounded background queue; if your hook falls far behind, events are dropped
   and a warning is logged. To use DI services in hooks, subclass `HermexEvents`, override its
   methods and register it with `services.AddSingleton<HermexEvents, MyEvents>()`.
+  Don't inject `IHermexSettings` into that subclass's constructor (it depends on the events),
+  and don't call `UpdateAsync` from a settings hook; change `ctx.Proposed` instead.
 
 ## Browsing captured mail over IMAP
 
@@ -237,6 +240,8 @@ The library multi-targets **net10.0** and **net11.0**, so it requires .NET 10 or
 
 Everything is additive and every default keeps 2.0.0 behaviour.
 
+- **New method names:** `AddHermex()` and `UseHermex()`. `AddMail4Dev()` and `UseMail4Dev()` keep
+  working unchanged and will be deprecated in a future release.
 - **Host control:** `AllowRuntimeSettings`, authorization tiers, a relay host allow-list,
   `HermexEvents` hooks and the public `IHermexSettings`. See [Running Hermex for a team](#running-hermex-for-a-team).
 - **Diagnostics:** saved settings that fail validation are now skipped with a warning instead of silently.

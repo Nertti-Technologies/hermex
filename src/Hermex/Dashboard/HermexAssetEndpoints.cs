@@ -33,8 +33,11 @@ internal static class HermexAssetEndpoints
                 return Results.Stream(stream, ContentTypeFor(assetPath));
             });
 
-        // Embedded CSS/JS/icons hold no mail; Hermex adds no requirement unless the host asks.
-        if (!authorization.AllowAnonymousAssets)
+        // Embedded CSS/JS/icons hold no mail: tagged Viewer, but Hermex adds no requirement unless
+        // the host asks (a host FallbackPolicy still applies).
+        if (authorization.AllowAnonymousAssets)
+            assets.WithMetadata(new HermexEndpointMetadata(HermexEndpointTier.Viewer));
+        else
             assets.WithHermexTier(HermexEndpointTier.Viewer, authorization);
     }
 

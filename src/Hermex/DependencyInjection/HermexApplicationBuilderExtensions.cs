@@ -19,7 +19,7 @@ public static class HermexApplicationBuilderExtensions
     /// API at <c>/hermex/api</c> and the SignalR hub at <c>/hermex/hub</c>. The SMTP
     /// server itself runs as a background service and needs no pipeline registration.
     /// </summary>
-    public static WebApplication UseMail4Dev(this WebApplication app)
+    public static WebApplication UseHermex(this WebApplication app)
     {
         ArgumentNullException.ThrowIfNull(app);
 
@@ -72,6 +72,12 @@ public static class HermexApplicationBuilderExtensions
         logger.LogInformation("Hermex dashboard available at {Path}.", HermexRoutes.Base);
         return app;
     }
+
+    /// <summary>
+    /// Earlier name of <see cref="UseHermex"/>, kept so existing applications keep working; it
+    /// behaves identically. Prefer <c>UseHermex()</c>: this name will be deprecated in a future release.
+    /// </summary>
+    public static WebApplication UseMail4Dev(this WebApplication app) => app.UseHermex();
 
     private static bool RazorPagesAlreadyMapped(IEndpointRouteBuilder endpoints)
     {

@@ -34,12 +34,12 @@ internal sealed class HermexTestHost : IAsyncDisposable
 
     /// <param name="configure">Hermex options.</param>
     /// <param name="services">Extra host services (authentication, policies, hooks).</param>
-    /// <param name="beforeUseMail4Dev">Runs after Build, before UseMail4Dev (e.g. to seed stored settings).</param>
+    /// <param name="beforeUseHermex">Runs after Build, before UseHermex (e.g. to seed stored settings).</param>
     /// <param name="directory">Reuse a database directory from an earlier host.</param>
     public static async Task<HermexTestHost> StartAsync(
         Action<HermexOptions>? configure = null,
         Action<IServiceCollection>? services = null,
-        Func<WebApplication, Task>? beforeUseMail4Dev = null,
+        Func<WebApplication, Task>? beforeUseHermex = null,
         string? directory = null)
     {
         directory ??= Path.Combine(Path.GetTempPath(), "hermex-tests", Guid.NewGuid().ToString("N"));
@@ -53,7 +53,7 @@ internal sealed class HermexTestHost : IAsyncDisposable
         builder.WebHost.UseUrls("http://127.0.0.1:0");
         builder.Logging.ClearProviders();
 
-        builder.Services.AddMail4Dev(o =>
+        builder.Services.AddHermex(o =>
         {
             o.SmtpPort = FreePort();
             o.DatabasePath = Path.Combine(directory, "hermex.db");
@@ -63,9 +63,9 @@ internal sealed class HermexTestHost : IAsyncDisposable
         services?.Invoke(builder.Services);
 
         var app = builder.Build();
-        if (beforeUseMail4Dev is not null)
-            await beforeUseMail4Dev(app);
-        app.UseMail4Dev();
+        if (beforeUseHermex is not null)
+            await beforeUseHermex(app);
+        app.UseHermex();
         await app.StartAsync();
 
         var client = new HttpClient { BaseAddress = new Uri(app.Urls.First()) };
@@ -113,7 +113,7 @@ internal sealed class HermexTestHost : IAsyncDisposable
         catch { /* best effort */ }
     }
 
-    private static int FreePort()
+    public static int FreePort()
     {
         using var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();

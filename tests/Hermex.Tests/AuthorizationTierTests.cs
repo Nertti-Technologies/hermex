@@ -106,7 +106,6 @@ public sealed class AuthorizationTierTests
         var endpoints = host.Services.GetRequiredService<EndpointDataSource>().Endpoints
             .OfType<RouteEndpoint>()
             .Where(e => e.RoutePattern.RawText?.TrimStart('/').StartsWith("hermex", StringComparison.OrdinalIgnoreCase) == true)
-            .Where(e => e.RoutePattern.RawText?.Contains("/assets/", StringComparison.Ordinal) != true)
             .ToList();
 
         Assert.NotEmpty(endpoints);
@@ -122,6 +121,42 @@ public sealed class AuthorizationTierTests
         Assert.Equal(HttpStatusCode.Unauthorized, await SendAsync(host, HttpMethod.Get, "/hermex/api/settings", null));
         Assert.Equal(HttpStatusCode.Unauthorized, await SendAsync(host, HttpMethod.Delete, "/hermex/api/messages", null));
         Assert.Equal(HttpStatusCode.OK, await SendAsync(host, HttpMethod.Get, "/hermex/api/settings", ViewerRoles));
+    }
+
+    [Fact]
+    public async Task Null_admin_tier_inherits_the_manager_policy()
+    {
+        await using var host = await HermexTestHost.StartAsync(
+            o =>
+            {
+                o.Authorization.ViewerPolicy = "SignedIn";
+                o.Authorization.ManagerPolicy = "Manage";
+            },
+            TestAuthHandler.AddTo);
+
+        Assert.Equal(HttpStatusCode.Forbidden, await SendAsync(host, HttpMethod.Get, "/hermex/api/settings", ViewerRoles));
+        Assert.Equal(HttpStatusCode.OK, await SendAsync(host, HttpMethod.Get, "/hermex/api/settings", ManagerRoles));
+    }
+
+    [Fact]
+    public async Task Admin_detail_check_passes_the_http_context_as_resource()
+    {
+        // A resource-aware requirement, as a host might write against HermexEndpointMetadata.
+        await using var host = await HermexTestHost.StartAsync(
+            o => o.Authorization.AdminPolicy = "AdminByEndpoint",
+            s =>
+            {
+                TestAuthHandler.AddTo(s);
+                s.AddAuthorization(a => a.AddPolicy("AdminByEndpoint", p => p.RequireAssertion(ctx =>
+                    ctx.Resource is HttpContext && ctx.User.IsInRole("admin"))));
+            });
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/hermex/api/status");
+        request.Headers.Add(TestAuthHandler.RolesHeader, "admin");
+        using var response = await host.Client.SendAsync(request);
+        using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+
+        Assert.Equal(JsonValueKind.String, doc.RootElement.GetProperty("server").GetProperty("databasePath").ValueKind);
     }
 
     [Fact]
@@ -190,12 +225,39 @@ public sealed class AuthorizationTierTests
                     .RequireRole("admin")));
             });
 
-        using var request = new HttpRequestMessage(HttpMethod.Get, "/hermex/api/status");
-        request.Headers.Add(TestAuthHandler.RolesHeader, "admin");
-        using var response = await host.Client.SendAsync(request);
-        using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        async Task<JsonValueKind> DatabasePathAsync(string roles)
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, "/hermex/api/status");
+            request.Headers.Add(TestAuthHandler.RolesHeader, roles);
+            using var response = await host.Client.SendAsync(request);
+            using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            return doc.RootElement.GetProperty("server").GetProperty("databasePath").ValueKind;
+        }
 
-        Assert.Equal(JsonValueKind.String, doc.RootElement.GetProperty("server").GetProperty("databasePath").ValueKind);
+        Assert.Equal(JsonValueKind.String, await DatabasePathAsync("admin"));
+        Assert.Equal(JsonValueKind.Null, await DatabasePathAsync("manager"));
+    }
+
+    [Fact]
+    public async Task Message_html_is_sandboxed_by_csp()
+    {
+        await using var host = await HermexTestHost.StartAsync();
+        var store = host.Services.GetRequiredService<Hermex.Storage.IMailStore>();
+        var raw = TestSupport.Raw(
+            "From: a@example.test\nTo: b@example.test\nSubject: Html\nContent-Type: text/html\n\n<script>alert(1)</script>\n");
+        var record = new Hermex.Storage.MessageRecord
+        {
+            EnvelopeFrom = "a@example.test", EnvelopeTo = "b@example.test", FromAddress = "a@example.test",
+            Subject = "Html", HasHtml = true, ReceivedAtUtc = DateTimeOffset.UtcNow,
+            Recipients = new[] { "b@example.test" }, RawData = raw, RawSize = raw.Length,
+        };
+        await store.AddMessagesAsync(new[] { record });
+
+        using var response = await host.Client.GetAsync($"/hermex/api/messages/{record.Id}/html");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("sandbox", string.Join(",", response.Headers.GetValues("Content-Security-Policy")));
+        Assert.Equal("nosniff", string.Join(",", response.Headers.GetValues("X-Content-Type-Options")));
     }
 
     [Fact]

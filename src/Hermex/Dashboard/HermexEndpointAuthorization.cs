@@ -51,7 +51,8 @@ internal static class HermexEndpointAuthorization
 
         var evaluator = services.GetRequiredService<IPolicyEvaluator>();
         var authentication = await evaluator.AuthenticateAsync(policy, context).ConfigureAwait(false);
-        var result = await evaluator.AuthorizeAsync(policy, authentication, context, resource: null)
+        // The middleware passes the HttpContext as the resource; do the same so resource-aware handlers agree.
+        var result = await evaluator.AuthorizeAsync(policy, authentication, context, resource: context)
             .ConfigureAwait(false);
         return result.Succeeded;
     }
@@ -78,7 +79,7 @@ internal static class HermexEndpointAuthorization
     /// <summary>
     /// Fails fast at startup instead of serving a dashboard whose policies cannot be evaluated:
     /// every policy name must be registered, and each policy needs an authentication scheme to
-    /// challenge with (its own, or the host's default). <c>UseMail4Dev</c> is synchronous, so this
+    /// challenge with (its own, or the host's default). <c>UseHermex</c> is synchronous, so this
     /// blocks on the async providers once at startup, as the store initialisation there does.
     /// </summary>
     public static void Verify(IServiceProvider services, HermexAuthorizationOptions authorization)
@@ -86,7 +87,7 @@ internal static class HermexEndpointAuthorization
         if (!authorization.IsEnabled)
             return;
 
-        // Always present: AddMail4Dev's AddRazorPages registers the authorization services.
+        // Always present: AddHermex's AddRazorPages registers the authorization services.
         var policies = services.GetRequiredService<IAuthorizationPolicyProvider>();
         var defaultChallenge = services.GetService<IAuthenticationSchemeProvider>()?
             .GetDefaultChallengeSchemeAsync().GetAwaiter().GetResult();

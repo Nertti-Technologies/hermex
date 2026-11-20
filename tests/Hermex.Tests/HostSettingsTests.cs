@@ -2,6 +2,8 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Hermex.Storage;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
@@ -27,7 +29,7 @@ public sealed class HostSettingsTests
     public async Task Stored_settings_are_applied_by_default()
     {
         await using var host = await HermexTestHost.StartAsync(
-            beforeUseMail4Dev: SeedStoredSettings(s => s.DashboardTitle = "Stored title"));
+            beforeUseHermex: SeedStoredSettings(s => s.DashboardTitle = "Stored title"));
 
         Assert.Equal("Stored title", host.Options.DashboardTitle);
     }
@@ -37,7 +39,7 @@ public sealed class HostSettingsTests
     {
         await using var host = await HermexTestHost.StartAsync(
             o => o.AllowRuntimeSettings = false,
-            beforeUseMail4Dev: SeedStoredSettings(s =>
+            beforeUseHermex: SeedStoredSettings(s =>
             {
                 s.RelayEnabled = true;
                 s.RelayHost = "smtp.elsewhere.test";
@@ -88,6 +90,38 @@ public sealed class HostSettingsTests
         using var status = JsonDocument.Parse(await host.Client.GetStringAsync("/hermex/api/status"));
 
         Assert.False(status.RootElement.GetProperty("options").GetProperty("allowRuntimeSettings").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Earlier_registration_names_still_work()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "hermex-tests", Guid.NewGuid().ToString("N"));
+        var builder = WebApplication.CreateBuilder(
+            new WebApplicationOptions { ContentRootPath = Path.GetTempPath() });
+        builder.WebHost.UseUrls("http://127.0.0.1:0");
+#pragma warning disable CS0618 // in case the earlier names are marked obsolete later
+        builder.Services.AddMail4Dev(o =>
+        {
+            o.SmtpPort = HermexTestHost.FreePort();
+            o.DatabasePath = Path.Combine(directory, "hermex.db");
+            o.DashboardTitle = "Earlier names";
+        });
+        await using var app = builder.Build();
+        app.UseMail4Dev();
+#pragma warning restore CS0618
+        await app.StartAsync();
+        try
+        {
+            using var client = new HttpClient { BaseAddress = new Uri(app.Urls.First()) };
+            var html = await client.GetStringAsync("/hermex");
+            Assert.Contains("Earlier names", html);
+        }
+        finally
+        {
+            await app.StopAsync();
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            try { Directory.Delete(directory, recursive: true); } catch { /* best effort */ }
+        }
     }
 
     [Fact]

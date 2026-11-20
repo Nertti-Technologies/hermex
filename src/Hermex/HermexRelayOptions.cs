@@ -40,6 +40,9 @@ public sealed class HermexRelayOptions
     /// </summary>
     public IList<string> AllowedHosts { get; } = new List<string>();
 
+    /// <summary>A copy of every value, for one relay attempt (<see cref="AllowedHosts"/> is shared, read-only use).</summary>
+    internal HermexRelayOptions Snapshot() => (HermexRelayOptions)MemberwiseClone();
+
     /// <summary>Whether <paramref name="host"/> passes <see cref="AllowedHosts"/>.</summary>
     public bool IsHostAllowed(string? host)
     {

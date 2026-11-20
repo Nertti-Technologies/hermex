@@ -71,8 +71,8 @@ internal static class SamplePages
             </div>
 
             <p class="lead">
-              This app registered Hermex with <code>AddMail4Dev()</code> and
-              <code>UseMail4Dev()</code>. An SMTP server is listening on
+              This app registered Hermex with <code>AddHermex()</code> and
+              <code>UseHermex()</code>. An SMTP server is listening on
               <code>localhost:2525</code>. Send a test message below — it never leaves your
               machine — then open the dashboard to inspect it.
             </p>

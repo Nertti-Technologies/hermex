@@ -9,7 +9,7 @@ using Hermex.Sample.ConsoleApp;
 var builder = WebApplication.CreateBuilder(args);
 builder.WebHost.UseUrls("http://localhost:5180");
 
-builder.Services.AddMail4Dev(options =>
+builder.Services.AddHermex(options =>
 {
     options.SmtpPort = 2530;
     options.ServerHostName = "hermex.console";
@@ -25,7 +25,7 @@ builder.Services.AddMail4Dev(options =>
 builder.Services.AddHostedService<SampleMailSender>();
 
 var app = builder.Build();
-app.UseMail4Dev();
+app.UseHermex();
 app.MapGet("/", () => Results.Redirect("/hermex"));
 
 Console.WriteLine();

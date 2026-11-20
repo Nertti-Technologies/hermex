@@ -29,6 +29,10 @@ internal sealed class HermexSettingsService : IHermexSettings
     // applies, so overlapping changes would persist one and apply another.
     private readonly SemaphoreSlim _updateLock = new(1, 1);
 
+    // Set while a change runs on this async flow. The lock is not re-entrant, so a settings hook
+    // that calls UpdateAsync would otherwise wait on itself forever.
+    private readonly AsyncLocal<bool> _updating = new();
+
     public HermexSettingsService(
         HermexOptions options,
         IMailStore store,
@@ -145,13 +149,21 @@ internal sealed class HermexSettingsService : IHermexSettings
     private async Task<HermexSettingsUpdateResult> ApplyAsync(HermexSettings settings,
         HermexSettingsChangeSource source, CancellationToken cancellationToken)
     {
+        if (_updating.Value)
+        {
+            throw new InvalidOperationException(
+                "A settings hook cannot update settings; change HermexSettingsChangingContext.Proposed instead.");
+        }
+
         await _updateLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            _updating.Value = true;
             return await ApplyLockedAsync(settings, source, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
+            _updating.Value = false;
             _updateLock.Release();
         }
     }

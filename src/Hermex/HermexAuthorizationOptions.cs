@@ -40,8 +40,8 @@ public sealed class HermexAuthorizationOptions
     public string? AdminPolicy { get; set; }
 
     /// <summary>
-    /// Serve the embedded CSS, JavaScript and icons without authorization. Default <c>true</c>.
-    /// When <c>false</c> they require the Viewer policy.
+    /// Serve the embedded CSS, JavaScript and icons without a Hermex policy. Default <c>true</c>.
+    /// When <c>false</c> they require the Viewer policy. A host <c>FallbackPolicy</c> still applies.
     /// </summary>
     public bool AllowAnonymousAssets { get; set; } = true;
 

@@ -77,7 +77,7 @@ internal sealed class MailRelayService : IMailRelayService
 
         // One snapshot is checked, shown to the hook and used to connect, so a concurrent settings
         // change cannot redirect the message to a host that was never checked or approved.
-        var target = SnapshotRelayOptions();
+        var target = _options.Relay.Snapshot();
 
         // Settings are validated against the allow-list, but options can also be changed in
         // code after startup, so check again right before connecting.
@@ -116,22 +116,6 @@ internal sealed class MailRelayService : IMailRelayService
             _eventLog.Error("Relay", $"Failed to relay message #{messageId}: {ex.Message}");
             return MailRelayResult.Fail(ex.Message);
         }
-    }
-
-    private HermexRelayOptions SnapshotRelayOptions()
-    {
-        var live = _options.Relay;
-        return new HermexRelayOptions
-        {
-            Enabled = live.Enabled,
-            AutomaticRelay = live.AutomaticRelay,
-            Host = live.Host,
-            Port = live.Port,
-            UseStartTls = live.UseStartTls,
-            Username = live.Username,
-            Password = live.Password,
-            Timeout = live.Timeout,
-        };
     }
 
     private static List<string> SplitRecipients(string envelopeTo)

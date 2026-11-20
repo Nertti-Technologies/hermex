@@ -17,8 +17,11 @@ public enum HermexSettingsChangeSource
 /// Hooks around Hermex's sensitive actions, in the style of ASP.NET Core's
 /// <c>CookieAuthenticationEvents</c>. Assign the <c>On…</c> delegates, or subclass this type,
 /// override the virtual methods and register it with
-/// <c>services.AddSingleton&lt;HermexEvents, MyEvents&gt;()</c> (before or after <c>AddMail4Dev</c>);
-/// a registered subclass replaces <see cref="HermexOptions.Events"/>.
+/// <c>services.AddSingleton&lt;HermexEvents, MyEvents&gt;()</c> (before or after <c>AddHermex</c>);
+/// a registered subclass replaces <see cref="HermexOptions.Events"/>. A subclass must not take
+/// <see cref="IHermexSettings"/> or the relay service in its constructor (they depend on it); resolve
+/// them from <c>HttpContext.RequestServices</c> or an <c>IServiceProvider</c> when needed. A settings
+/// hook must not call <see cref="IHermexSettings.UpdateAsync"/>; change <c>Proposed</c> instead.
 /// <para>
 /// Veto hooks run <em>before</em> the action and fail closed: an exception is logged and treated
 /// as a rejection. Notification hooks run <em>after</em> the action and fail open: an exception
@@ -74,7 +77,7 @@ public abstract class HermexVetoContext
     /// <summary>The current request, or <c>null</c> when the action runs outside a request.</summary>
     public HttpContext? HttpContext { get; init; }
 
-    /// <summary>Cancelled when the request is aborted or the operation is cancelled.</summary>
+    /// <summary>The operation's cancellation token (for dashboard deletes, the request's); may be <c>None</c>.</summary>
     public CancellationToken CancellationToken { get; init; }
 
     /// <summary>Whether a hook rejected the action.</summary>
@@ -151,7 +154,7 @@ public sealed class HermexSettingsChangedContext
     /// <summary>The current request, or <c>null</c> when the change happened outside a request.</summary>
     public HttpContext? HttpContext { get; init; }
 
-    /// <summary>Cancelled when the request is aborted or the operation is cancelled.</summary>
+    /// <summary>The operation's cancellation token (for dashboard deletes, the request's); may be <c>None</c>.</summary>
     public CancellationToken CancellationToken { get; init; }
 }
 
@@ -173,6 +176,6 @@ public sealed class HermexMessageStoredContext
     /// <summary>The raw message size in bytes.</summary>
     public required long SizeBytes { get; init; }
 
-    /// <summary>Cancelled when the host is shutting down.</summary>
+    /// <summary>The persistence batch's cancellation token, cancelled when the host shuts down; may be <c>None</c>.</summary>
     public CancellationToken CancellationToken { get; init; }
 }

@@ -27,7 +27,7 @@ public enum HermexTlsMode
 
 /// <summary>
 /// Configuration for the in-process Hermex SMTP server and dashboard.
-/// Configure it through the <c>AddMail4Dev(options =&gt; ...)</c> callback.
+/// Configure it through the <c>AddHermex(options =&gt; ...)</c> callback.
 /// </summary>
 public sealed class HermexOptions
 {
@@ -158,7 +158,7 @@ public sealed class HermexOptions
 
     // ----------------------------------------------------------------- Dashboard
 
-    /// <summary>Whether the web dashboard, API and SignalR hub are wired up by <c>UseMail4Dev()</c>. Default <c>true</c>.</summary>
+    /// <summary>Whether the web dashboard, API and SignalR hub are wired up by <c>UseHermex()</c>. Default <c>true</c>.</summary>
     public bool EnableDashboard { get; set; } = true;
 
     /// <summary>The product name shown in the dashboard header and browser title.</summary>

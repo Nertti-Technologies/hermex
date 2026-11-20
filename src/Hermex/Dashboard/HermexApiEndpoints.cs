@@ -63,11 +63,18 @@ internal static class HermexApiEndpoints
         }).WithHermexTier(Viewer, authorization);
 
         // ---- rendered HTML body (cid: links rewritten to attachment URLs) --
-        api.MapGet("/messages/{id:long}/html", async (long id, IMailStore store) =>
+        api.MapGet("/messages/{id:long}/html", async (long id, IMailStore store, HttpResponse response) =>
         {
             var detail = await store.GetMessageAsync(id);
             if (detail?.HtmlBody is null)
                 return Results.NotFound();
+
+            // The body is sender-controlled HTML served from the dashboard's origin. The dashboard
+            // frames it with sandbox="", but opened directly in a tab its scripts would run as the
+            // signed-in user. The CSP sandbox gives it an opaque origin with scripts off either way;
+            // images and styles still load, so the preview looks the same.
+            response.Headers.ContentSecurityPolicy = "sandbox";
+            response.Headers.XContentTypeOptions = "nosniff";
             return Results.Content(RewriteCidLinks(id, detail), "text/html; charset=utf-8");
         }).WithHermexTier(Viewer, authorization);
 

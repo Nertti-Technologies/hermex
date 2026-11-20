@@ -97,6 +97,19 @@ public sealed class EventHookTests
     }
 
     [Fact]
+    public async Task Settings_hook_calling_update_is_refused_not_deadlocked()
+    {
+        IHermexSettings? settings = null;
+        await using var host = await HermexTestHost.StartAsync(o =>
+            o.Events.OnSettingsChanging = ctx => settings!.UpdateAsync(ctx.Proposed));
+        settings = host.Services.GetRequiredService<IHermexSettings>();
+
+        var result = await settings.UpdateAsync(settings.GetCurrent()).WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(HermexSettingsUpdateStatus.Rejected, result.Status); // the hook threw: fail closed
+    }
+
+    [Fact]
     public async Task Settings_hooks_see_persisted_source_at_startup()
     {
         var sources = new ConcurrentBag<HermexSettingsChangeSource>();
@@ -107,7 +120,7 @@ public sealed class EventHookTests
                 o.Events.OnSettingsChanging = ctx => { sources.Add(ctx.Source); return Task.CompletedTask; };
                 o.Events.OnSettingsChanged = ctx => { changed.Add(ctx.Source); return Task.CompletedTask; };
             },
-            beforeUseMail4Dev: async app =>
+            beforeUseHermex: async app =>
             {
                 var store = app.Services.GetRequiredService<IMailStore>();
                 await store.InitializeAsync();
@@ -233,7 +246,7 @@ public sealed class EventHookTests
         var hook = new RejectAllDeletes();
         await using var host = await HermexTestHost.StartAsync(
             o => o.Events.OnDeleting = _ => Task.CompletedTask,
-            services => services.AddSingleton<HermexEvents>(hook)); // registered after AddMail4Dev
+            services => services.AddSingleton<HermexEvents>(hook)); // registered after AddHermex
         var id = await host.SeedMessageAsync();
 
         using var response = await host.Client.SendAsync(Delete($"/hermex/api/messages/{id}"));
