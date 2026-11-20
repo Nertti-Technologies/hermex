@@ -76,9 +76,10 @@ public static class HermexApplicationBuilderExtensions
     }
 
     /// <summary>
-    /// Earlier name of <see cref="UseHermex"/>, kept so existing applications keep working; it
-    /// behaves identically. Prefer <c>UseHermex()</c>: this name will be deprecated in a future release.
+    /// Earlier name of <see cref="UseHermex"/>; it behaves identically. Deprecated in 2.2.0 and
+    /// removed in 3.0: use <c>UseHermex()</c>.
     /// </summary>
+    [Obsolete(HermexDeprecations.EarlierNamesMessage, DiagnosticId = HermexDeprecations.EarlierNamesId)]
     public static WebApplication UseMail4Dev(this WebApplication app) => app.UseHermex();
 
     private static bool RazorPagesAlreadyMapped(IEndpointRouteBuilder endpoints)

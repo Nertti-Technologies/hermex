@@ -92,6 +92,20 @@ public sealed class HostSettingsTests
         Assert.False(status.RootElement.GetProperty("options").GetProperty("allowRuntimeSettings").GetBoolean());
     }
 
+    [Theory]
+    [InlineData(typeof(Microsoft.Extensions.DependencyInjection.HermexServiceCollectionExtensions), "AddMail4Dev")]
+    [InlineData(typeof(Microsoft.AspNetCore.Builder.HermexApplicationBuilderExtensions), "UseMail4Dev")]
+    public void Earlier_registration_names_are_deprecated_with_their_own_id(Type type, string method)
+    {
+        var obsolete = type.GetMethod(method)?.GetCustomAttributes(typeof(ObsoleteAttribute), false)
+            .Cast<ObsoleteAttribute>().SingleOrDefault();
+
+        Assert.NotNull(obsolete);
+        Assert.Equal("HERMEX0001", obsolete.DiagnosticId); // documented in the README; hosts suppress by it
+        Assert.False(obsolete.IsError);
+        Assert.Contains("3.0", obsolete.Message);
+    }
+
     [Fact]
     public async Task Earlier_registration_names_still_work()
     {
@@ -99,7 +113,7 @@ public sealed class HostSettingsTests
         var builder = WebApplication.CreateBuilder(
             new WebApplicationOptions { ContentRootPath = Path.GetTempPath() });
         builder.WebHost.UseUrls("http://127.0.0.1:0");
-#pragma warning disable CS0618 // in case the earlier names are marked obsolete later
+#pragma warning disable HERMEX0001 // the deprecated names must keep working until 3.0
         builder.Services.AddMail4Dev(o =>
         {
             o.SmtpPort = HermexTestHost.FreePort();
@@ -108,7 +122,7 @@ public sealed class HostSettingsTests
         });
         await using var app = builder.Build();
         app.UseMail4Dev();
-#pragma warning restore CS0618
+#pragma warning restore HERMEX0001
         await app.StartAsync();
         try
         {
