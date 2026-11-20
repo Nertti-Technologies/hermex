@@ -3,18 +3,24 @@ name: Release
 # Publishes Hermex when a version tag is pushed, e.g.:
 #   git tag v2.1.0 && git push origin v2.1.0
 #
-# On a tag this workflow:
-#   1. packs the NuGet package
-#   2. publishes it to GitHub Packages   (uses the built-in GITHUB_TOKEN)
-#   3. creates a GitHub Release          (uses the built-in GITHUB_TOKEN)
-#   4. publishes it to NuGet.org         (Trusted Publishing: GitHub OIDC -> 1-hour key)
+# Two jobs, so build and test code never runs with publishing rights:
+#   build    (read-only token, no OIDC) tests, packs and uploads the packages as an artifact.
+#   publish  (environment "release")    downloads them and pushes, without checking out or
+#                                       building any code:
+#     1. GitHub Packages   (built-in GITHUB_TOKEN)
+#     2. NuGet.org         (Trusted Publishing: GitHub OIDC -> 1-hour key)
+#     3. GitHub Release    (last, so it never announces a version NuGet.org does not have)
 #
 # It can also be run by hand ("Run workflow") for an existing tag, to finish a release
 # whose publish step failed. Every step skips work that is already done, so a re-run is safe.
 #
 # NuGet.org side: a Trusted Publishing policy for owner Nertti-Technologies, repository
-# hermex, workflow file release.yml. Repo side: the NUGET_USER secret holds the nuget.org
-# profile name (not an email address). No API key is stored.
+# hermex, workflow file release.yml (set its environment to "release" only once this
+# workflow is on main, or releases from the older workflow are refused). Repo side: the
+# NUGET_USER secret holds the nuget.org profile name (not an email address). The "release"
+# environment is the approval gate only when set up in Settings > Environments with the
+# owner as required reviewer and deployments limited to v* tags and main; GitHub creates it
+# without protection otherwise. No API key is stored.
 
 on:
   push:
@@ -25,16 +31,23 @@ on:
         description: 'Existing version tag to publish, e.g. v2.0.0'
         required: true
 
-permissions:
-  contents: write    # required to create the GitHub Release
-  packages: write    # required to publish to GitHub Packages
-  id-token: write    # required for NuGet.org Trusted Publishing (OIDC)
+# Nothing by default; each job asks for only what it needs.
+permissions: {}
+
+# A tag push and a manual run for the same tag must not race on the release.
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
 
 jobs:
-  publish:
+  build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     env:
       TAG: ${{ inputs.tag || github.ref_name }}
+    outputs:
+      version: ${{ steps.version.outputs.value }}
     steps:
       - name: Validate tag
         run: |
@@ -42,12 +55,13 @@ jobs:
             echo "::error::'$TAG' is not a version tag like v2.0.0"; exit 1
           fi
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: refs/tags/${{ env.TAG }}
+          persist-credentials: false
 
       - name: Set up .NET
-        uses: actions/setup-dotnet@v5
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
         with:
           # SDK from global.json; the 10.0 runtime is for the net10.0 test run.
           global-json-file: global.json
@@ -66,7 +80,37 @@ jobs:
           /p:Version=${{ steps.version.outputs.value }}
           /p:ContinuousIntegrationBuild=true
 
-      # --- GitHub-side publishing (always available via GITHUB_TOKEN) ---------
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: packages
+          path: ./artifacts/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    # Required reviewers on this environment are the release approval (see the top comment).
+    environment: release
+    permissions:
+      contents: write    # required to create the GitHub Release
+      packages: write    # required to publish to GitHub Packages
+      id-token: write    # required for NuGet.org Trusted Publishing (OIDC)
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+      VERSION: ${{ needs.build.outputs.version }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: packages
+          path: ./artifacts
+
+      # Only for the dotnet CLI's nuget push; no project is restored or built here.
+      - name: Set up .NET
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: 10.0.x
 
       - name: Publish to GitHub Packages
         run: >
@@ -75,19 +119,6 @@ jobs:
           --source "https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json"
           --no-symbols
           --skip-duplicate
-
-      - name: Create GitHub Release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "GitHub Release $TAG already exists; leaving it as is."
-          else
-            gh release create "$TAG" ./artifacts/*.nupkg \
-              --verify-tag --title "Hermex ${{ steps.version.outputs.value }}" --generate-notes
-          fi
-
-      # --- NuGet.org publishing (Trusted Publishing, no stored API key) -------
 
       # Exchanges this job's GitHub OIDC token for a nuget.org key valid for one hour.
       - name: NuGet login (OIDC)
@@ -102,3 +133,25 @@ jobs:
           --api-key "${{ steps.nuget-login.outputs.NUGET_API_KEY }}"
           --source https://api.nuget.org/v3/index.json
           --skip-duplicate
+
+      - name: Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # A re-run: finish a release left without its package or as a draft.
+            assets="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
+            for package in ./artifacts/*.nupkg; do
+              if ! grep -qxF "$(basename "$package")" <<< "$assets"; then
+                gh release upload "$TAG" "$package"
+              fi
+            done
+            if [ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = "true" ]; then
+              gh release edit "$TAG" --draft=false
+            fi
+          else
+            prerelease=()
+            if [[ "$TAG" == *-* ]]; then prerelease=(--prerelease); fi
+            gh release create "$TAG" ./artifacts/*.nupkg \
+              --verify-tag --title "Hermex $VERSION" --generate-notes "${prerelease[@]}"
+          fi
