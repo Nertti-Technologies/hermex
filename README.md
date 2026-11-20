@@ -136,6 +136,7 @@ builder.Services.AddHermex(o =>
     o.AutoResolvePortConflict = false;         // fail loudly rather than move the port
     o.AllowRuntimeSettings = false;            // your options are final; Settings page is read-only
     o.Relay.AllowedHosts.Add("smtp.example.com");
+    o.Relay.ValidateCertificate = true;        // relay over STARTTLS only, with a valid certificate
 
     o.Authorization.ViewerPolicy  = "SignedIn";            // read mail, live updates, status
     o.Authorization.ManagerPolicy = "SignedIn";            // delete, clear inbox, relay
@@ -163,6 +164,10 @@ app.UseHermex();
 - **Scripting the API.** Once a policy is set, POST/PUT/DELETE calls to `/hermex/api` must send the
   header `X-Hermex-Request: 1` (the dashboard does). This stops other sites from triggering them
   with a signed-in user's cookie.
+- **Live-update hub.** Once a policy is set, the hub at `/hermex/hub` refuses browser requests whose
+  `Origin` is another site, so another page cannot open it with a signed-in user's credentials. Pages
+  on the same host always work; if a reverse proxy rewrites the `Host` header, list the public origin
+  in `o.Authorization.AllowedHubOrigins`.
 - **Status.** `GET /hermex/api/status` returns the database path and last error only to callers
   who pass the Admin tier.
 - **Hooks.** Veto hooks (`OnSettingsChanging`, `OnRelaying`, `OnDeleting`) run before the action,
@@ -235,6 +240,10 @@ dotnet test  tests/Hermex.Tests/Hermex.Tests.csproj
 ```
 
 The library multi-targets **net10.0** and **net11.0**, so it requires .NET 10 or later.
+
+The build runs the recommended .NET analyzers (`AnalysisLevel=latest-recommended`) and treats every
+warning as an error, including NuGet vulnerability advisories. Deliberate opt-outs are recorded,
+with their reason, in `.editorconfig`.
 
 ## What's new in 2.1.0
 

@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.ApplicationModels;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Net.Http.Headers;
 
 namespace Hermex.Dashboard;
 
@@ -49,12 +50,70 @@ internal static class HermexEndpointAuthorization
         if (policy is null)
             return false;
 
-        var evaluator = services.GetRequiredService<IPolicyEvaluator>();
-        var authentication = await evaluator.AuthenticateAsync(policy, context).ConfigureAwait(false);
-        // The middleware passes the HttpContext as the resource; do the same so resource-aware handlers agree.
-        var result = await evaluator.AuthorizeAsync(policy, authentication, context, resource: context)
-            .ConfigureAwait(false);
-        return result.Succeeded;
+        // AuthenticateAsync replaces context.User when the policy names schemes; this is only a
+        // probe, so give the rest of the pipeline its original caller back.
+        var caller = context.User;
+        try
+        {
+            var evaluator = services.GetRequiredService<IPolicyEvaluator>();
+            var authentication = await evaluator.AuthenticateAsync(policy, context).ConfigureAwait(false);
+            // The middleware passes the HttpContext as the resource; do the same so resource-aware handlers agree.
+            var result = await evaluator.AuthorizeAsync(policy, authentication, context, resource: context)
+                .ConfigureAwait(false);
+            return result.Succeeded;
+        }
+        finally
+        {
+            context.User = caller;
+        }
+    }
+
+    /// <summary>
+    /// Refuses hub requests from other sites. Browsers apply no CORS to WebSockets and SignalR can
+    /// connect without negotiating, so a page on another site could otherwise open the hub with the
+    /// user's ambient credentials (Windows sign-in, <c>SameSite=None</c> cookies) and read live mail
+    /// summaries and logs. Wraps the endpoint itself, so it does not depend on middleware order.
+    /// </summary>
+    public static TBuilder RequireSameOrigin<TBuilder>(this TBuilder builder, HermexAuthorizationOptions authorization)
+        where TBuilder : IEndpointConventionBuilder
+    {
+        builder.Add(endpoint =>
+        {
+            var next = endpoint.RequestDelegate;
+            if (next is null)
+                return;
+            endpoint.RequestDelegate = context =>
+            {
+                if (IsAllowedOrigin(context.Request, authorization))
+                    return next(context);
+                context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                return Task.CompletedTask;
+            };
+        });
+        return builder;
+    }
+
+    /// <summary>
+    /// No <c>Origin</c> (non-browser client), the request's own host and port (scheme ignored, since
+    /// TLS-terminating proxies change it), or an entry in <see cref="HermexAuthorizationOptions.AllowedHubOrigins"/>.
+    /// <c>Origin: null</c> (sandboxed documents, such as the message preview) is refused.
+    /// </summary>
+    internal static bool IsAllowedOrigin(HttpRequest request, HermexAuthorizationOptions authorization)
+    {
+        if (!request.Headers.TryGetValue(HeaderNames.Origin, out var values))
+            return true;
+
+        var origin = values.ToString().Trim();
+        if (authorization.AllowedHubOrigins.Any(allowed =>
+                string.Equals(allowed?.Trim().TrimEnd('/'), origin.TrimEnd('/'), StringComparison.OrdinalIgnoreCase)))
+        {
+            return true;
+        }
+
+        if (!Uri.TryCreate(origin, UriKind.Absolute, out var uri) || string.IsNullOrEmpty(uri.Host))
+            return false;
+        var authority = uri.IsDefaultPort ? uri.Host : $"{uri.Host}:{uri.Port}";
+        return string.Equals(authority, request.Host.Value, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>

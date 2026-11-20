@@ -72,6 +72,23 @@ internal sealed class HermexTestHost : IAsyncDisposable
         return new HermexTestHost(app, directory, client);
     }
 
+    /// <summary>
+    /// The SMTP port once the listener has bound. The listener starts in the background (TLS
+    /// generates a certificate first), so it can lag behind the host's start; 10 s is ample.
+    /// </summary>
+    public async Task<int> WaitForSmtpPortAsync()
+    {
+        var state = Services.GetRequiredService<HermexRuntimeState>();
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (DateTime.UtcNow < deadline)
+        {
+            if (state.Status == HermexServerStatus.Listening && state.ListeningPort is { } port)
+                return port;
+            await Task.Delay(25);
+        }
+        throw new TimeoutException("The SMTP listener did not start.");
+    }
+
     /// <summary>Stores a message directly, bypassing SMTP, and returns its id.</summary>
     public async Task<long> SeedMessageAsync()
     {

@@ -110,6 +110,39 @@ public sealed class EventHookTests
     }
 
     [Fact]
+    public async Task Work_started_by_a_hook_can_update_after_that_change_finished()
+    {
+        IHermexSettings? settings = null;
+        var later = new TaskCompletionSource<HermexSettingsUpdateStatus>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var started = 0;
+        await using var host = await HermexTestHost.StartAsync(o =>
+            o.Events.OnSettingsChanged = changed =>
+            {
+                if (Interlocked.Exchange(ref started, 1) == 0)
+                {
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await Task.Delay(200);
+                            var current = settings!.GetCurrent();
+                            later.TrySetResult((await settings.UpdateAsync(current)).Status);
+                        }
+                        catch (Exception ex)
+                        {
+                            later.TrySetException(ex);
+                        }
+                    });
+                }
+                return Task.CompletedTask;
+            });
+        settings = host.Services.GetRequiredService<IHermexSettings>();
+
+        Assert.Equal(HermexSettingsUpdateStatus.Saved, (await settings.UpdateAsync(settings.GetCurrent())).Status);
+        Assert.Equal(HermexSettingsUpdateStatus.Saved, await later.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+    }
+
+    [Fact]
     public async Task Settings_hooks_see_persisted_source_at_startup()
     {
         var sources = new ConcurrentBag<HermexSettingsChangeSource>();
@@ -235,7 +268,7 @@ public sealed class EventHookTests
         await SendMailAsync(host, "Second");
 
         Assert.True(await WaitForAsync(() => Task.FromResult(subjects.Count == 2)));
-        Assert.Equal(new[] { "First", "Second" }, subjects.ToArray());
+        Assert.Equal(["First", "Second"], subjects.ToArray());
         var stats = await host.Services.GetRequiredService<IMailStore>().GetStatsAsync();
         Assert.Equal(2, stats.TotalMessages);
     }

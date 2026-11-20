@@ -45,7 +45,7 @@ public sealed class AuthorizationTierTests
         return response.StatusCode;
     }
 
-    private static HttpContent JsonContent(object value) =>
+    private static StringContent JsonContent(object value) =>
         new StringContent(JsonSerializer.Serialize(value), System.Text.Encoding.UTF8, "application/json");
 
     public static TheoryData<string, string, HermexEndpointTier> Endpoints => new()
@@ -77,7 +77,7 @@ public sealed class AuthorizationTierTests
     {
         await using var host = await StartWithPoliciesAsync();
         var id = await host.SeedMessageAsync();
-        var url = path.Replace("{id}", id.ToString());
+        var url = path.Replace("{id}", id.ToString(System.Globalization.CultureInfo.InvariantCulture));
         var verb = new HttpMethod(method);
 
         Assert.Equal(HttpStatusCode.Unauthorized, await SendAsync(host, verb, url, roles: null));
@@ -157,6 +157,62 @@ public sealed class AuthorizationTierTests
         using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
 
         Assert.Equal(JsonValueKind.String, doc.RootElement.GetProperty("server").GetProperty("databasePath").ValueKind);
+    }
+
+    [Theory]
+    [InlineData(null, true)]                          // non-browser client
+    [InlineData("SAME", true)]                        // the dashboard itself
+    [InlineData("https://SAME", true)]                // scheme ignored behind TLS-terminating proxies
+    [InlineData("https://evil.example", false)]
+    [InlineData("null", false)]                       // sandboxed document, e.g. the message preview
+    [InlineData("https://proxy.example", true)]       // listed in AllowedHubOrigins
+    public async Task Hub_refuses_other_origins_when_policies_are_set(string? origin, bool allowed)
+    {
+        await using var host = await StartWithPoliciesAsync(o => o.Authorization.AllowedHubOrigins.Add("https://proxy.example/"));
+        var authority = host.Client.BaseAddress!.Authority;
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/hermex/hub/negotiate?negotiateVersion=1");
+        request.Headers.Add(TestAuthHandler.RolesHeader, ViewerRoles);
+        if (origin is not null)
+        {
+            // "SAME" is this host's own authority; a bare "SAME" means the dashboard's http origin.
+            var value = origin == "SAME" ? "http://" + authority : origin.Replace("SAME", authority, StringComparison.Ordinal);
+            request.Headers.Add("Origin", value);
+        }
+        using var response = await host.Client.SendAsync(request);
+
+        Assert.Equal(allowed ? HttpStatusCode.OK : HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
+    [Theory]
+    [InlineData("https://evil.example", true)]
+    [InlineData(null, false)]
+    public async Task Hub_connect_without_negotiate_is_also_origin_checked(string? origin, bool refused)
+    {
+        // A browser can open the WebSocket directly (skipNegotiation), so the connect endpoint
+        // must be covered too, not only /negotiate.
+        await using var host = await StartWithPoliciesAsync();
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/hermex/hub");
+        request.Headers.Add(TestAuthHandler.RolesHeader, ViewerRoles);
+        if (origin is not null)
+            request.Headers.Add("Origin", origin);
+
+        using var response = await host.Client.SendAsync(request);
+
+        // Same-origin plain GET is not a valid SignalR request (400), but it gets past the check.
+        Assert.Equal(refused, response.StatusCode == HttpStatusCode.Forbidden);
+    }
+
+    [Fact]
+    public async Task Hub_origin_is_not_checked_without_policies()
+    {
+        await using var host = await HermexTestHost.StartAsync();
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/hermex/hub/negotiate?negotiateVersion=1");
+        request.Headers.Add("Origin", "https://evil.example");
+
+        using var response = await host.Client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
 
     [Fact]

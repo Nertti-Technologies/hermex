@@ -495,7 +495,7 @@ internal sealed class SmtpSession
         await _stream.FlushAsync(ct).ConfigureAwait(false);
     }
 
-    private async Task SendMultilineAsync(int code, IReadOnlyList<string> lines, CancellationToken ct)
+    private async Task SendMultilineAsync(int code, List<string> lines, CancellationToken ct)
     {
         var sb = new StringBuilder();
         for (var i = 0; i < lines.Count; i++)

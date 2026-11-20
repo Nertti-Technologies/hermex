@@ -13,6 +13,8 @@ namespace Hermex.Configuration;
 /// dashboard, from host code or from the database at startup, passes the
 /// <see cref="HermexOptions.AllowRuntimeSettings"/> lock, validation and the settings hooks.
 /// </summary>
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1001:Types that own disposable fields should be disposable",
+    Justification = "SemaphoreSlim holds no unmanaged resource unless AvailableWaitHandle is used; disposing it at shutdown would make an in-flight update throw.")]
 internal sealed class HermexSettingsService : IHermexSettings
 {
     private const string SettingsKey = "hermex.settings";
@@ -29,9 +31,11 @@ internal sealed class HermexSettingsService : IHermexSettings
     // applies, so overlapping changes would persist one and apply another.
     private readonly SemaphoreSlim _updateLock = new(1, 1);
 
-    // Set while a change runs on this async flow. The lock is not re-entrant, so a settings hook
-    // that calls UpdateAsync would otherwise wait on itself forever.
-    private readonly AsyncLocal<bool> _updating = new();
+    // Identifies the running change on its async flow. The lock is not re-entrant, so a settings
+    // hook that calls UpdateAsync would otherwise wait on itself forever. A token (not a bool) so
+    // work a hook forks, which inherits the flow, is not refused once that change has finished.
+    private readonly AsyncLocal<object?> _updateFlow = new();
+    private object? _activeUpdate;
 
     public HermexSettingsService(
         HermexOptions options,
@@ -149,7 +153,7 @@ internal sealed class HermexSettingsService : IHermexSettings
     private async Task<HermexSettingsUpdateResult> ApplyAsync(HermexSettings settings,
         HermexSettingsChangeSource source, CancellationToken cancellationToken)
     {
-        if (_updating.Value)
+        if (_updateFlow.Value is { } flow && ReferenceEquals(flow, Volatile.Read(ref _activeUpdate)))
         {
             throw new InvalidOperationException(
                 "A settings hook cannot update settings; change HermexSettingsChangingContext.Proposed instead.");
@@ -158,12 +162,14 @@ internal sealed class HermexSettingsService : IHermexSettings
         await _updateLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            _updating.Value = true;
+            var token = new object();
+            Volatile.Write(ref _activeUpdate, token);
+            _updateFlow.Value = token;
             return await ApplyLockedAsync(settings, source, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
-            _updating.Value = false;
+            Volatile.Write(ref _activeUpdate, null);
             _updateLock.Release();
         }
     }

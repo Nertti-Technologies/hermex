@@ -45,6 +45,13 @@ public sealed class HermexAuthorizationOptions
     /// </summary>
     public bool AllowAnonymousAssets { get; set; } = true;
 
+    /// <summary>
+    /// Extra browser origins (e.g. <c>https://mail.example.com</c>) allowed to open the live-update hub
+    /// when policies are set. A page served from the same host is always allowed; add an origin
+    /// only when a reverse proxy rewrites the <c>Host</c> header. Exact match, case-insensitive.
+    /// </summary>
+    public IList<string> AllowedHubOrigins { get; } = new List<string>();
+
     /// <summary>Whether any policy is set.</summary>
     public bool IsEnabled =>
         !string.IsNullOrWhiteSpace(ViewerPolicy) ||

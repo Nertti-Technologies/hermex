@@ -24,6 +24,16 @@ public sealed class HermexRelayOptions
     /// <summary>Upgrade the upstream connection with <c>STARTTLS</c> when offered.</summary>
     public bool UseStartTls { get; set; }
 
+    /// <summary>
+    /// Use <c>STARTTLS</c>, require it, and validate the upstream server's certificate with the
+    /// normal .NET checks (trusted chain, host name matches <see cref="Host"/>). Implies
+    /// <see cref="UseStartTls"/>; a server that does not offer <c>STARTTLS</c> is refused, so a man in
+    /// the middle cannot strip it and read the credentials. Default <c>false</c> (any certificate is accepted, as development relays
+    /// often use self-signed ones); set it to <c>true</c> whenever the dashboard is shared.
+    /// Code-only: the Settings page cannot change it.
+    /// </summary>
+    public bool ValidateCertificate { get; set; }
+
     /// <summary>Optional upstream AUTH user name.</summary>
     public string? Username { get; set; }
 

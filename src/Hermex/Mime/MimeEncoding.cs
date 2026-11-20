@@ -9,6 +9,9 @@ namespace Hermex.Mime;
 /// </summary>
 public static class MimeEncoding
 {
+    private static readonly System.Buffers.SearchValues<char> CharsetTerminators =
+        System.Buffers.SearchValues.Create(" ;\t");
+
     private static readonly Encoding Utf8NoBom = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
 
     static MimeEncoding()
@@ -45,7 +48,7 @@ public static class MimeEncoding
         var name = charset.Trim().Trim('"', '\'').Trim().ToLowerInvariant();
 
         // Some agents append junk such as "utf-8; format=flowed" inside the charset token.
-        var cut = name.IndexOfAny(new[] { ' ', ';', '\t' });
+        var cut = name.AsSpan().IndexOfAny(CharsetTerminators);
         if (cut > 0)
             name = name[..cut];
 
