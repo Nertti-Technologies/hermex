@@ -50,4 +50,7 @@ public sealed class HermexSettings
 
     /// <summary>The upstream relay port.</summary>
     public int RelayPort { get; set; } = 25;
+
+    /// <summary>Returns an independent copy (every member is a value type or an immutable string).</summary>
+    internal HermexSettings Clone() => (HermexSettings)MemberwiseClone();
 }

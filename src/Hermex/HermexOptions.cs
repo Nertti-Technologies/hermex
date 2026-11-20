@@ -170,6 +170,23 @@ public sealed class HermexOptions
     /// <summary>Number of messages shown per page in the dashboard inbox. Default <c>50</c>.</summary>
     public int DashboardPageSize { get; set; } = 50;
 
+    // ----------------------------------------------------------------- Host control
+
+    /// <summary>
+    /// Whether the dashboard Settings page and <see cref="IHermexSettings"/> may change settings at
+    /// runtime, and whether settings saved by an earlier run are re-applied at startup. Default
+    /// <c>true</c>. Set <c>false</c> to make the options configured in code final: stored settings
+    /// are then ignored (but kept), and updates are refused with
+    /// <see cref="HermexSettingsUpdateStatus.Locked"/>.
+    /// </summary>
+    public bool AllowRuntimeSettings { get; set; } = true;
+
+    /// <summary>Authorization policies for the dashboard, API and hub. No policies by default.</summary>
+    public HermexAuthorizationOptions Authorization { get; } = new();
+
+    /// <summary>Hooks to veto or audit sensitive actions. No-ops by default.</summary>
+    public HermexEvents Events { get; } = new();
+
     // ----------------------------------------------------------------- Helpers
 
     /// <summary>Resolves <see cref="ListenAddress"/> into an <see cref="IPAddress"/>.</summary>

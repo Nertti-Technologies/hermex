@@ -871,6 +871,11 @@ a:hover { text-decoration: underline; }
 .m4d-mailbox__count--zero { visibility: hidden; }
 
 /* ----- Settings form ------------------------------------------------------ */
+/* Wraps the settings form so it can be made read-only when the host locks settings. */
+.m4d-fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
+.m4d-fieldset:disabled .m4d-input,
+.m4d-fieldset:disabled .m4d-check { opacity: .7; cursor: not-allowed; }
+
 .m4d-form__grid {
     display: grid;
     grid-template-columns: 1fr 1fr;

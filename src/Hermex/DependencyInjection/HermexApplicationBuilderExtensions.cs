@@ -54,10 +54,15 @@ public static class HermexApplicationBuilderExtensions
             return app;
         }
 
-        // Dashboard assets (embedded CSS/JS), realtime hub and JSON/file API.
-        HermexAssetEndpoints.MapHermexAssets(app);
-        app.MapHub<InboxHub>(HermexRoutes.Hub);
-        HermexApiEndpoints.MapHermexApi(app);
+        // Refuse to serve a dashboard whose policies cannot be evaluated.
+        HermexEndpointAuthorization.Verify(app.Services, options.Authorization);
+
+        // Dashboard assets (embedded CSS/JS), realtime hub and JSON/file API. Each endpoint is
+        // tagged with its tier; the Razor Pages get theirs from HermexPageConvention.
+        HermexAssetEndpoints.MapHermexAssets(app, options.Authorization);
+        app.MapHub<InboxHub>(HermexRoutes.Hub)
+            .WithHermexTier(HermexEndpointTier.Viewer, options.Authorization);
+        HermexApiEndpoints.MapHermexApi(app, options.Authorization);
 
         // Dashboard Razor Pages — map them only when the host has not already done so,
         // otherwise the pages would be registered twice and routing would be ambiguous.

@@ -1,21 +1,23 @@
 # Security Policy
 
-## Supported Versions
+## Supported versions
 
-Use this section to tell people about which versions of your project are
-currently being supported with security updates.
+| Version | Supported |
+| ------- | --------- |
+| 2.x     | Yes       |
+| 1.x     | No — upgrade to 2.x (1.0.0 bundles a vulnerable SQLite, GHSA-2m69-gcr7-jv3q) |
 
-| Version | Supported          |
-| ------- | ------------------ |
-| 5.1.x   | :white_check_mark: |
-| 5.0.x   | :x:                |
-| 4.0.x   | :white_check_mark: |
-| < 4.0   | :x:                |
+## Reporting a vulnerability
 
-## Reporting a Vulnerability
+Please report vulnerabilities privately through GitHub:
+**Security → Report a vulnerability** on https://github.com/Nertti-Technologies/hermex
+(private vulnerability reporting). Do not open a public issue.
 
-Use this section to tell people how to report a vulnerability.
+Include the Hermex version, the .NET version, and the steps or code needed to reproduce the
+problem. You will get an acknowledgement on the report, and we will keep you informed as it is
+investigated and fixed.
 
-Tell them where to go, how often they can expect to get an update on a
-reported vulnerability, what to expect if the vulnerability is accepted or
-declined, etc.
+## Deployment note
+
+Hermex is a development tool. Its defaults assume a single developer on `localhost`. Before
+exposing the dashboard to other people, read "Running Hermex for a team" in the README.

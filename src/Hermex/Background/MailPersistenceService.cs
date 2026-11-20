@@ -1,4 +1,6 @@
+using System.Threading.Channels;
 using Hermex.Diagnostics;
+using Hermex.Internal;
 using Hermex.Mime;
 using Hermex.Realtime;
 using Hermex.Smtp;
@@ -17,13 +19,24 @@ internal sealed class MailPersistenceService : BackgroundService
 {
     private const int LogBatchSize = 128;
 
+    // Estimate: one warning per this many dropped stored-message events keeps a sustained
+    // overload visible without flooding the host's log.
+    private const long DroppedEventWarningInterval = 1_000;
+
     private readonly MailWriteQueue _queue;
     private readonly IMailStore _store;
     private readonly IInboxNotifier _notifier;
     private readonly IMailRelayService _relay;
     private readonly IHermexEventLog _eventLog;
     private readonly HermexOptions _options;
+    private readonly HermexEventDispatcher _events;
     private readonly ILogger<MailPersistenceService> _logger;
+
+    // OnMessageStored events wait here for a single consumer, so a slow host hook never slows
+    // persistence or capture. Bounded by WriteQueueCapacity: worst case that many small contexts
+    // (ids, addresses, subject) in memory; beyond it events are dropped and counted.
+    private readonly Channel<HermexMessageStoredContext> _storedEvents;
+    private long _droppedStoredEvents;
 
     public MailPersistenceService(
         MailWriteQueue queue,
@@ -32,6 +45,7 @@ internal sealed class MailPersistenceService : BackgroundService
         IMailRelayService relay,
         IHermexEventLog eventLog,
         HermexOptions options,
+        HermexEventDispatcher events,
         ILogger<MailPersistenceService> logger)
     {
         _queue = queue;
@@ -40,21 +54,43 @@ internal sealed class MailPersistenceService : BackgroundService
         _relay = relay;
         _eventLog = eventLog;
         _options = options;
+        _events = events;
         _logger = logger;
+        _storedEvents = Channel.CreateBounded<HermexMessageStoredContext>(
+            new BoundedChannelOptions(Math.Max(1, options.WriteQueueCapacity))
+            {
+                SingleReader = true,
+                FullMode = BoundedChannelFullMode.Wait, // TryWrite then fails, so drops can be counted
+            });
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         await _store.InitializeAsync(stoppingToken).ConfigureAwait(false);
 
-        // Messages and logs are drained on independent loops so a slow batch of one never
-        // stalls the other.
+        // Messages, logs and stored-message hooks are drained on independent loops so a slow
+        // batch of one never stalls the others.
         await Task.WhenAll(
             ProcessMessagesAsync(stoppingToken),
-            ProcessLogsAsync(stoppingToken)).ConfigureAwait(false);
+            ProcessLogsAsync(stoppingToken),
+            ProcessStoredEventsAsync()).ConfigureAwait(false);
     }
 
     private async Task ProcessMessagesAsync(CancellationToken stoppingToken)
+    {
+        try
+        {
+            await DrainMessagesAsync(stoppingToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            // No more messages, whether stopping or faulted: let the hook consumer finish what is
+            // queued and stop, so a fault still surfaces instead of WhenAll waiting forever.
+            _storedEvents.Writer.TryComplete();
+        }
+    }
+
+    private async Task DrainMessagesAsync(CancellationToken stoppingToken)
     {
         var reader = _queue.MessageReader;
         var batch = new List<ReceivedMessage>(Math.Max(1, _options.PersistenceBatchSize));
@@ -130,14 +166,51 @@ internal sealed class MailPersistenceService : BackgroundService
             _logger.LogDebug(ex, "Hermex: could not refresh statistics after a batch.");
         }
 
+        foreach (var record in records)
+            QueueStoredEvent(record, cancellationToken);
+
         // Automatic relay runs off the persistence path; RelayAsync logs its own failures.
         if (_options.Relay is { Enabled: true, AutomaticRelay: true })
         {
             foreach (var record in records)
             {
                 var id = record.Id;
-                _ = _relay.RelayAsync(id, CancellationToken.None);
+                _ = _relay.RelayAsync(id, automatic: true, CancellationToken.None);
             }
+        }
+    }
+
+    private void QueueStoredEvent(MessageRecord record, CancellationToken cancellationToken)
+    {
+        var context = new HermexMessageStoredContext
+        {
+            MessageId = record.Id,
+            From = record.FromAddress,
+            To = record.Recipients,
+            Subject = record.Subject,
+            SizeBytes = record.RawSize,
+            CancellationToken = cancellationToken,
+        };
+        if (_storedEvents.Writer.TryWrite(context))
+            return;
+
+        var dropped = Interlocked.Increment(ref _droppedStoredEvents);
+        if (dropped % DroppedEventWarningInterval == 1)
+        {
+            _logger.LogWarning(
+                "Hermex: the OnMessageStored hook is falling behind; {Dropped} event(s) dropped so far.", dropped);
+        }
+    }
+
+    private async Task ProcessStoredEventsAsync()
+    {
+        // Drains until the message loop completes the writer, so events for mail flushed during
+        // shutdown are still delivered; the host's shutdown timeout bounds how long that takes.
+        var reader = _storedEvents.Reader;
+        while (await reader.WaitToReadAsync().ConfigureAwait(false))
+        {
+            while (reader.TryRead(out var context))
+                await _events.MessageStoredAsync(context).ConfigureAwait(false);
         }
     }
 

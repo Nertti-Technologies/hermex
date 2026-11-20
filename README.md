@@ -105,10 +105,71 @@ All configuration is done through the `AddMail4Dev` callback.
 | `DatabasePath` | `{ContentRoot}/hermex/hermex.db` | SQLite file location. |
 | `RetentionMaxMessages` / `RetentionMaxAge` | `5000` / _none_ | Retention policy. |
 | `DefaultTheme` | `System` | `System`, `Light`, or `Dark`. |
-| `Relay` | _disabled_ | Upstream relay settings. |
+| `Relay` | _disabled_ | Upstream relay settings. `Relay.AllowedHosts` limits which hosts relay may connect to (empty = any). |
+| `AllowRuntimeSettings` | `true` | Let the Settings page change settings and re-apply saved settings at startup. `false` makes your code options final. |
+| `Authorization` | _no policies_ | Viewer / Manager / Admin policies for the dashboard, API and hub. |
+| `Events` | _no-ops_ | Hooks to veto or audit settings changes, relay and deletes, and to observe stored mail. |
 
 Most of these are also editable at runtime from the dashboard's **Settings** page — including
-the SMTP and IMAP ports, which re-bind their listener live.
+the SMTP and IMAP ports, which re-bind their listener live. Host code can do the same through
+`IHermexSettings`.
+
+## Running Hermex for a team
+
+By default Hermex is a single-developer tool on `localhost`: anyone who can reach the dashboard
+can read mail, change settings and switch on relay. Before exposing it to other people (a test
+or staging server behind your own sign-in), keep control with these options:
+
+```csharp
+builder.Services.AddAuthentication(/* your scheme */);
+builder.Services.AddAuthorization(o =>
+{
+    o.AddPolicy("SignedIn", p => p.RequireAuthenticatedUser());
+    o.AddPolicy("ManageConfiguration", p => p.RequireRole("admin"));
+});
+
+builder.Services.AddMail4Dev(o =>
+{
+    o.SmtpPort = 2525;
+    o.ListenAddress = "loopback";              // SMTP only for the app on this machine
+    o.AutoResolvePortConflict = false;         // fail loudly rather than move the port
+    o.AllowRuntimeSettings = false;            // your options are final; Settings page is read-only
+    o.Relay.AllowedHosts.Add("smtp.example.com");
+
+    o.Authorization.ViewerPolicy  = "SignedIn";            // read mail, live updates, status
+    o.Authorization.ManagerPolicy = "SignedIn";            // delete, clear inbox, relay
+    o.Authorization.AdminPolicy   = "ManageConfiguration"; // Settings and Logs pages and APIs
+
+    o.Events.OnRelaying = ctx =>
+    {
+        ctx.Reject("Test mail is never forwarded.");
+        return Task.CompletedTask;
+    };
+});
+
+var app = builder.Build();
+app.UseAuthentication();
+app.UseAuthorization();
+app.UseMail4Dev();
+```
+
+- **Tiers.** A tier left `null` uses the policy of the tier below it, so Settings and Logs are
+  never less protected than the inbox. With no policies at all, nothing changes.
+- **Endpoint metadata.** Every Hermex endpoint carries `HermexEndpointMetadata(Tier)`, so your own
+  middleware or policies can target tiers instead of URLs.
+- **Startup checks.** `UseMail4Dev()` throws `HermexConfigurationException` if a policy name is not
+  registered or there is no authentication scheme to challenge with.
+- **Scripting the API.** Once a policy is set, POST/PUT/DELETE calls to `/hermex/api` must send the
+  header `X-Hermex-Request: 1` (the dashboard does). This stops other sites from triggering them
+  with a signed-in user's cookie.
+- **Status.** `GET /hermex/api/status` returns the database path and last error only to callers
+  who pass the Admin tier.
+- **Hooks.** Veto hooks (`OnSettingsChanging`, `OnRelaying`, `OnDeleting`) run before the action,
+  including automatic relay and startup; an exception counts as a rejection. Notification hooks
+  (`OnSettingsChanged`, `OnMessageStored`) run after it and never break capture. `OnMessageStored`
+  is delivered from a bounded background queue; if your hook falls far behind, events are dropped
+  and a warning is logged. To use DI services in hooks, subclass `HermexEvents`, override its
+  methods and register it with `services.AddSingleton<HermexEvents, MyEvents>()`.
 
 ## Browsing captured mail over IMAP
 
@@ -171,6 +232,14 @@ dotnet test  tests/Hermex.Tests/Hermex.Tests.csproj
 ```
 
 The library multi-targets **net10.0** and **net11.0**, so it requires .NET 10 or later.
+
+## What's new in 2.1.0
+
+Everything is additive and every default keeps 2.0.0 behaviour.
+
+- **Host control:** `AllowRuntimeSettings`, authorization tiers, a relay host allow-list,
+  `HermexEvents` hooks and the public `IHermexSettings`. See [Running Hermex for a team](#running-hermex-for-a-team).
+- **Diagnostics:** saved settings that fail validation are now skipped with a warning instead of silently.
 
 ## What's new in 2.0.0
 

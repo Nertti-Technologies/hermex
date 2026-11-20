@@ -1,12 +1,16 @@
 using Hermex;
 using Hermex.Background;
 using Hermex.Configuration;
+using Hermex.Dashboard;
 using Hermex.Diagnostics;
 using Hermex.Imap;
+using Hermex.Internal;
 using Hermex.Realtime;
 using Hermex.Smtp;
 using Hermex.Storage;
 using Microsoft.AspNetCore.Mvc.ApplicationParts;
+using Microsoft.AspNetCore.Mvc.RazorPages;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 
 namespace Microsoft.Extensions.DependencyInjection;
@@ -42,6 +46,12 @@ public static class HermexServiceCollectionExtensions
         // Diagnostics.
         services.AddSingleton<IHermexEventLog, HermexEventLog>();
 
+        // Host hooks. TryAdd, so a host's own AddSingleton<HermexEvents, MyEvents>() wins
+        // whether it is registered before or after this call (the last registration resolves).
+        services.AddHttpContextAccessor();
+        services.TryAddSingleton(options.Events);
+        services.AddSingleton<HermexEventDispatcher>();
+
         // Upstream relay.
         services.AddSingleton<IMailRelayService, MailRelayService>();
 
@@ -58,13 +68,18 @@ public static class HermexServiceCollectionExtensions
         services.AddHostedService<MailPersistenceService>();
         services.AddHostedService<RetentionService>();
 
-        // Runtime-editable settings.
+        // Runtime-editable settings, also exposed to host code.
         services.AddSingleton<HermexSettingsService>();
+        services.AddSingleton<IHermexSettings>(sp => sp.GetRequiredService<HermexSettingsService>());
 
         // Dashboard UI (Razor Pages shipped inside this package). AddRazorPages is
         // idempotent, so this is safe even when the host application already uses it.
         var mvcBuilder = services.AddRazorPages();
         RegisterDashboardPart(mvcBuilder);
+
+        // Authorization for Hermex's own pages only (see HermexPageConvention).
+        services.Configure<RazorPagesOptions>(razor =>
+            razor.Conventions.Add(new HermexPageConvention(options.Authorization)));
 
         return services;
     }
