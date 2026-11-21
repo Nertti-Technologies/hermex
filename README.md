@@ -1,8 +1,4 @@
-<div align="center">
-
-<img src="header.png" alt="An in-process SMTP + IMAP server" />
-
-</div>
+![An in-process SMTP + IMAP server](https://raw.githubusercontent.com/Nertti-Technologies/hermex/138701e5636c98aa67c41d338cb3a1817fb7206a/header.png)
 
 **An in-process SMTP + IMAP server with an executive-grade web dashboard for .NET applications.**
 
@@ -270,6 +266,6 @@ Everything is additive and every default keeps 2.0.0 behaviour.
 
 ## License
 
-Apache License 2.0; see [LICENSE](LICENSE).
+Apache License 2.0; see [LICENSE](https://github.com/Nertti-Technologies/hermex/blob/main/LICENSE).
 
 Version 1.0.0 was released under the MIT License and remains available under those terms.
