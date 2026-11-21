@@ -240,6 +240,50 @@ public sealed class SqliteMailStore : IMailStore, IDisposable
         }
     }
 
+    public Task<IReadOnlyList<long>> DeleteMessagesAsync(IReadOnlyList<long> ids,
+        CancellationToken cancellationToken = default) =>
+        ExecuteForIdsAsync("DELETE FROM Messages WHERE Id IN (SELECT value FROM json_each(@Ids)) RETURNING Id;",
+            ids, null, cancellationToken);
+
+    public Task<IReadOnlyList<long>> SetReadAsync(IReadOnlyList<long> ids, bool isRead,
+        CancellationToken cancellationToken = default) =>
+        ExecuteForIdsAsync(
+            "UPDATE Messages SET IsRead = @IsRead WHERE Id IN (SELECT value FROM json_each(@Ids)) RETURNING Id;",
+            ids, isRead, cancellationToken);
+
+    /// <summary>
+    /// Runs one statement over a list of ids, passed as a single JSON-array parameter (no SQL is built from the
+    /// ids), and returns the ids the statement touched.
+    /// </summary>
+    private async Task<IReadOnlyList<long>> ExecuteForIdsAsync(string sql, IReadOnlyList<long> ids, bool? isRead,
+        CancellationToken cancellationToken)
+    {
+        if (ids.Count == 0)
+            return Array.Empty<long>();
+
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+        await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            await using var command = connection.CreateCommand();
+            command.CommandText = sql;
+            command.Parameters.AddWithValue("@Ids", System.Text.Json.JsonSerializer.Serialize(ids));
+            if (isRead is { } value)
+                command.Parameters.AddWithValue("@IsRead", value);
+
+            var touched = new List<long>(ids.Count);
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                touched.Add(reader.GetInt64(0));
+            return touched;
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
+    }
+
     public async Task<int> ClearMessagesAsync(CancellationToken cancellationToken = default)
     {
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);

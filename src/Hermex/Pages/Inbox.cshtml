@@ -36,6 +36,21 @@
                     <span>Delete all</span>
                 </button>
             </div>
+            <div class="m4d-selbar" id="m4d-selbar">
+                <label class="m4d-selbar__all">
+                    <input type="checkbox" id="m4d-select-all" aria-label="Select all messages on this page" />
+                </label>
+                <span class="m4d-selbar__count" id="m4d-sel-count" role="status"></span>
+                <span class="m4d-selbar__spacer"></span>
+                @* Icons are filled in by inbox.js from its single icon set. *@
+                <button type="button" class="m4d-icon-btn m4d-icon-btn--sm" id="m4d-sel-read" disabled
+                        title="Mark selected as read" aria-label="Mark selected messages as read"></button>
+                <button type="button" class="m4d-icon-btn m4d-icon-btn--sm" id="m4d-sel-unread" disabled
+                        title="Mark selected as unread" aria-label="Mark selected messages as unread"></button>
+                <button type="button" class="m4d-btn m4d-btn--danger m4d-btn--sm" id="m4d-sel-delete" disabled>
+                    <span id="m4d-sel-delete-label">Delete</span>
+                </button>
+            </div>
             <div class="m4d-stripe" id="m4d-list-stats">
                 <span class="m4d-stripe__item"><strong id="m4d-stat-total">0</strong> messages</span>
                 <span class="m4d-stripe__item"><strong id="m4d-stat-unread">0</strong> unread</span>

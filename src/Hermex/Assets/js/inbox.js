@@ -5,12 +5,19 @@
 
     var ICON_CLIP = '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05 12.25 20.24a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>';
     var ICON_DOWNLOAD = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></svg>';
-    var ICON_TRASH = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>';
+    function icon(paths, size) {
+        return '<svg viewBox="0 0 24 24" width="' + size + '" height="' + size + '" fill="none" stroke="currentColor" ' +
+            'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + paths + '</svg>';
+    }
+    var PATH_TRASH = '<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>';
+    var PATH_MAIL_OPEN = '<path d="M21.2 8.4c.5.38.8.97.8 1.6v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V10a2 2 0 0 1 .8-1.6l8-6a2 2 0 0 1 2.4 0l8 6Z"/><path d="m22 10-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 10"/>';
+    var PATH_MAIL = '<rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/>';
+    var ICON_TRASH = icon(PATH_TRASH, 15);
     var ICON_FILE = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>';
     var ICON_RELAY = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4z"/></svg>';
     var ICON_FOLDER = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>';
 
-    var state = { page: 1, search: '', unread: false, selectedId: null, mailboxId: null, totalPages: 1, detail: null, relayEnabled: false, sourceCache: {} };
+    var state = { page: 1, search: '', unread: false, selectedId: null, mailboxId: null, totalPages: 1, detail: null, relayEnabled: false, sourceCache: {}, checked: new Set(), pageIds: [], focusId: null };
     var el = {};
 
     function cache() {
@@ -24,6 +31,15 @@
         el.refresh = document.getElementById('m4d-refresh');
         el.clear = document.getElementById('m4d-clear');
         el.deleteMailbox = document.getElementById('m4d-delete-mailbox');
+        el.selectAll = document.getElementById('m4d-select-all');
+        el.selCount = document.getElementById('m4d-sel-count');
+        el.selRead = document.getElementById('m4d-sel-read');
+        el.selUnread = document.getElementById('m4d-sel-unread');
+        el.selDelete = document.getElementById('m4d-sel-delete');
+        el.selDeleteLabel = document.getElementById('m4d-sel-delete-label');
+        el.selRead.innerHTML = icon(PATH_MAIL_OPEN, 15);
+        el.selUnread.innerHTML = icon(PATH_MAIL, 15);
+        el.selDelete.insertAdjacentHTML('afterbegin', icon(PATH_TRASH, 14));
         el.mailboxList = document.getElementById('m4d-mailbox-list');
         el.statTotal = document.getElementById('m4d-stat-total');
         el.statUnread = document.getElementById('m4d-stat-unread');
@@ -142,7 +158,11 @@
 
         el.list.innerHTML = '';
         el.listEmpty.hidden = items.length > 0;
+        state.pageIds = items.map(function (m) { return m.id; });
+        // Selection is per page: drop ids that are no longer on it (deleted, or a new page).
+        state.checked.forEach(function (id) { if (state.pageIds.indexOf(id) < 0) state.checked.delete(id); });
         items.forEach(function (m) { el.list.appendChild(renderRow(m)); });
+        updateSelection();
 
         state.totalPages = result.totalPages || 1;
         renderPager(result);
@@ -151,7 +171,9 @@
     function renderRow(m) {
         var li = document.createElement('li');
         li.className = 'm4d-msg' + (m.isRead ? '' : ' m4d-msg--unread') +
-            (m.id === state.selectedId ? ' m4d-msg--selected' : '');
+            (m.id === state.selectedId ? ' m4d-msg--selected' : '') +
+            (state.checked.has(m.id) ? ' m4d-msg--checked' : '') +
+            (m.id === state.focusId ? ' m4d-msg--focused' : '');
         li.dataset.id = m.id;
         li.setAttribute('role', 'option');
 
@@ -170,8 +192,133 @@
             '</span>' +
             (m.isRead ? '' : '<span class="m4d-msg__unread-dot"></span>');
 
-        li.addEventListener('click', function () { selectMessage(m.id); });
+        var check = document.createElement('input');
+        check.type = 'checkbox';
+        check.className = 'm4d-msg__check';
+        check.checked = state.checked.has(m.id);
+        check.setAttribute('aria-label', 'Select message: ' + (m.subject || '(no subject)'));
+        check.addEventListener('click', function (e) { e.stopPropagation(); toggleChecked(m.id, check.checked); });
+        li.insertBefore(check, li.firstChild);
+
+        var actions = document.createElement('span');
+        actions.className = 'm4d-msg__actions';
+        actions.appendChild(rowButton(icon(m.isRead ? PATH_MAIL : PATH_MAIL_OPEN, 14), '',
+            m.isRead ? 'Mark unread' : 'Mark read', 'm4d-icon-btn', function () { setRead([m.id], !m.isRead); }));
+        // Destructive, so it carries a visible label as well as the icon.
+        actions.appendChild(rowButton(icon(PATH_TRASH, 13), 'Delete', 'Delete message',
+            'm4d-btn m4d-btn--danger m4d-btn--xs', function () { deleteMessage(m.id); }));
+        li.appendChild(actions);
+
+        li.addEventListener('click', function () { setFocus(m.id); selectMessage(m.id); });
         return li;
+    }
+
+    function rowButton(iconHtml, text, label, className, handler) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.className = className;
+        b.title = label;
+        b.setAttribute('aria-label', label);
+        b.innerHTML = iconHtml;   // constant SVG only
+        if (text) b.appendChild(document.createTextNode(text));
+        b.addEventListener('click', function (e) { e.stopPropagation(); handler(); });
+        return b;
+    }
+
+    // Focus follows a message id, not a position, so a list reload never moves it to another message.
+    function setFocus(id) {
+        state.focusId = id;
+        el.list.querySelectorAll('.m4d-msg').forEach(function (row) {
+            row.classList.toggle('m4d-msg--focused', Number(row.dataset.id) === id);
+        });
+    }
+
+    /* ---------- selection and bulk actions ---------- */
+    function toggleChecked(id, on) {
+        if (on) state.checked.add(id); else state.checked.delete(id);
+        var row = el.list.querySelector('.m4d-msg[data-id="' + id + '"]');
+        if (row) {
+            row.classList.toggle('m4d-msg--checked', on);
+            var box = row.querySelector('.m4d-msg__check');
+            if (box) box.checked = on;
+        }
+        updateSelection();
+    }
+
+    function updateSelection() {
+        var n = state.checked.size;
+        el.selCount.textContent = n ? n + ' selected' : '';
+        el.selRead.disabled = el.selUnread.disabled = el.selDelete.disabled = n === 0;
+        el.selDeleteLabel.textContent = n ? 'Delete (' + n + ')' : 'Delete';
+        el.selDelete.setAttribute('aria-label', 'Delete ' + n + ' selected message' + (n === 1 ? '' : 's'));
+        el.selectAll.checked = n > 0 && n === state.pageIds.length;
+        el.selectAll.indeterminate = n > 0 && n < state.pageIds.length;
+    }
+
+    async function setRead(ids, isRead) {
+        try {
+            await M.api('/messages/bulk-read', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ids: ids, isRead: isRead })
+            });
+            loadList();
+            loadMailboxes();
+        } catch (e) {
+            M.toast('Could not update the message(s).', 'error');
+        }
+    }
+
+    async function deleteChecked() {
+        var ids = Array.from(state.checked);
+        if (!ids.length) return;
+        if (!window.confirm('Delete ' + ids.length + ' selected message' + (ids.length === 1 ? '' : 's') +
+            '? This cannot be undone.')) return;
+        try {
+            var r = await M.api('/messages/bulk-delete', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ids: ids })
+            });
+            var deleted = (r && r.deleted) || [];
+            if (deleted.indexOf(state.selectedId) >= 0) { state.selectedId = null; showDetailEmpty(); }
+            state.checked.clear();
+            M.toast('Deleted ' + deleted.length + ' message(s).');
+            loadList();
+            loadMailboxes();
+        } catch (e) {
+            M.toast('Could not delete the messages.', 'error');
+        }
+    }
+
+    /* ---------- keyboard: j/k move, x select, Enter open, Delete delete ---------- */
+    function onKey(e) {
+        var t = e.target;
+        if (e.altKey || e.ctrlKey || e.metaKey) return;
+        // Shortcuts apply only when no control has focus, so Enter/Delete keep their normal meaning
+        // on buttons, links, inputs and the message preview.
+        if (t && t !== document.body && !(el.list.contains(t) && t.classList.contains('m4d-msg'))) return;
+        var n = state.pageIds.length;
+        if (!n) return;
+        var focused = state.focusId != null && state.pageIds.indexOf(state.focusId) >= 0 ? state.focusId : null;
+        if (e.key === 'j' || e.key === 'k') {
+            var index = focused == null ? -1 : state.pageIds.indexOf(focused);
+            index = Math.max(0, Math.min(n - 1, index + (e.key === 'j' ? 1 : -1)));
+            setFocus(state.pageIds[index]);
+            var row = el.list.querySelector('.m4d-msg[data-id="' + state.focusId + '"]');
+            if (row) row.scrollIntoView({ block: 'nearest' });
+        } else if (e.key === 'x' && focused != null) {
+            toggleChecked(focused, !state.checked.has(focused));
+        } else if (e.key === 'Enter' && focused != null) {
+            selectMessage(focused);
+        } else if (e.key === 'Delete' || e.key === '#') {
+            if (state.checked.size) deleteChecked();
+            else if (focused != null) deleteMessage(focused);
+            else return;
+        } else {
+            return;
+        }
+        e.preventDefault();
     }
 
     function renderPager(result) {
@@ -280,7 +427,7 @@
         el.detail.innerHTML = html;
 
         el.detail.querySelector('[data-act="delete"]').addEventListener('click', function () { deleteMessage(d.id); });
-        el.detail.querySelector('[data-act="unread"]').addEventListener('click', function () { markUnread(d.id); });
+        el.detail.querySelector('[data-act="unread"]').addEventListener('click', function () { setRead([d.id], false); });
         var relayButton = el.detail.querySelector('[data-act="relay"]');
         if (relayButton) relayButton.addEventListener('click', function () { relayMessage(d.id); });
         el.detail.querySelectorAll('.m4d-tab').forEach(function (tab) {
@@ -409,16 +556,6 @@
         }
     }
 
-    async function markUnread(id) {
-        try {
-            await M.api('/messages/' + id + '/read?isRead=false', { method: 'POST' });
-            M.toast('Marked as unread.');
-            loadList();
-        } catch (e) {
-            M.toast('Could not update the message.', 'error');
-        }
-    }
-
     async function relayMessage(id) {
         try {
             await M.api('/messages/' + id + '/relay', { method: 'POST' });
@@ -476,17 +613,23 @@
         el.refresh.addEventListener('click', function () { loadList(); M.refreshStatus(); });
         el.clear.addEventListener('click', clearInbox);
         if (el.deleteMailbox) el.deleteMailbox.addEventListener('click', deleteMailbox);
-        M.onHub('mailboxesChanged', function (p) {
-            var deleted = (p && p.deletedMessageIds) || [];
-            if (state.selectedId != null && deleted.indexOf(state.selectedId) >= 0) {
+        el.selectAll.addEventListener('change', function () {
+            var on = el.selectAll.checked;
+            state.pageIds.forEach(function (id) { toggleChecked(id, on); });
+        });
+        el.selRead.addEventListener('click', function () { setRead(Array.from(state.checked), true); });
+        el.selUnread.addEventListener('click', function () { setRead(Array.from(state.checked), false); });
+        el.selDelete.addEventListener('click', deleteChecked);
+        document.addEventListener('keydown', onKey);
+        var debouncedReload = M.debounce(function () { loadList(); loadMailboxes(); }, 350);
+        function closeIfDeleted(deleted) {
+            if (state.selectedId != null && (deleted || []).indexOf(state.selectedId) >= 0) {
                 state.selectedId = null;
                 showDetailEmpty();
             }
-            loadMailboxes();
-            loadList();
-        });
-
-        var debouncedReload = M.debounce(function () { loadList(); loadMailboxes(); }, 350);
+        }
+        M.onHub('messagesChanged', function (p) { closeIfDeleted(p && p.deletedIds); debouncedReload(); });
+        M.onHub('mailboxesChanged', function (p) { closeIfDeleted(p && p.deletedMessageIds); debouncedReload(); });
         M.onHub('messageReceived', debouncedReload);
         M.onHub('messageDeleted', debouncedReload);
         M.onHub('messageUpdated', function (p) {

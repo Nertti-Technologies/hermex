@@ -30,6 +30,30 @@ public interface IMailStore
     /// <summary>Deletes a single message. Returns <c>false</c> when the message is missing.</summary>
     Task<bool> DeleteMessageAsync(long id, CancellationToken cancellationToken = default);
 
+    /// <summary>Deletes the listed messages; returns the ids that existed and were removed.</summary>
+    /// <remarks>Added in 2.3.0. The default implementation deletes one at a time and is therefore not atomic.</remarks>
+    async Task<IReadOnlyList<long>> DeleteMessagesAsync(IReadOnlyList<long> ids,
+        CancellationToken cancellationToken = default)
+    {
+        var deleted = new List<long>();
+        foreach (var id in ids)
+            if (await DeleteMessageAsync(id, cancellationToken).ConfigureAwait(false))
+                deleted.Add(id);
+        return deleted;
+    }
+
+    /// <summary>Marks the listed messages read or unread; returns the ids that exist.</summary>
+    /// <remarks>Added in 2.3.0. The default implementation updates one at a time and is therefore not atomic.</remarks>
+    async Task<IReadOnlyList<long>> SetReadAsync(IReadOnlyList<long> ids, bool isRead,
+        CancellationToken cancellationToken = default)
+    {
+        var updated = new List<long>();
+        foreach (var id in ids)
+            if (await SetReadAsync(id, isRead, cancellationToken).ConfigureAwait(false))
+                updated.Add(id);
+        return updated;
+    }
+
     /// <summary>Deletes every message; returns the number removed.</summary>
     Task<int> ClearMessagesAsync(CancellationToken cancellationToken = default);
 

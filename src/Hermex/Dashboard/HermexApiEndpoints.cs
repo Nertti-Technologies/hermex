@@ -149,6 +149,44 @@ internal static class HermexApiEndpoints
             return Results.Ok(new { id });
         }).WithHermexTier(Manager, authorization);
 
+        // ---- bulk delete / mark read --------------------------------------
+        // Separate routes so each carries one tier. An empty or oversized id list is a 400, never "all".
+        api.MapPost("/messages/bulk-delete", async (BulkRequest? request, IMailStore store,
+            IInboxNotifier notifier, HermexEventDispatcher events, CancellationToken ct) =>
+        {
+            if (BulkRequest.Validate(request) is { } invalid)
+                return invalid;
+            var ids = request!.Ids!;
+
+            var deleting = new HermexDeletingContext
+            {
+                Scope = HermexDeleteScope.Messages,
+                MessageIds = ids,
+                HttpContext = events.HttpContext,
+                CancellationToken = ct,
+            };
+            if (!await events.DeletingAsync(deleting))
+                return Forbidden(deleting.RejectionReason);
+
+            var deleted = await store.DeleteMessagesAsync(ids, ct);
+            await notifier.MessagesChangedAsync(deleted, Array.Empty<long>(), null);
+            await notifier.StatsChangedAsync(await store.GetStatsAsync(CancellationToken.None)); // committed: always broadcast
+            return Results.Ok(new { deleted });
+        }).WithHermexTier(Manager, authorization);
+
+        api.MapPost("/messages/bulk-read", async (BulkRequest? request, IMailStore store,
+            IInboxNotifier notifier, CancellationToken ct) =>
+        {
+            if (BulkRequest.Validate(request) is { } invalid)
+                return invalid;
+
+            var isRead = request!.IsRead ?? true;
+            var updated = await store.SetReadAsync(request.Ids!, isRead, ct);
+            await notifier.MessagesChangedAsync(Array.Empty<long>(), updated, isRead);
+            await notifier.StatsChangedAsync(await store.GetStatsAsync(CancellationToken.None)); // committed: always broadcast
+            return Results.Ok(new { updated, isRead });
+        }).WithHermexTier(Viewer, authorization);
+
         // ---- clear the whole inbox ----------------------------------------
         api.MapDelete("/messages", async (IMailStore store, IInboxNotifier notifier, HermexEventDispatcher events) =>
         {
@@ -204,7 +242,7 @@ internal static class HermexApiEndpoints
             if (result is null)
                 return Results.NotFound();
             await notifier.MailboxesChangedAsync(result.DeletedMessageIds);
-            await notifier.StatsChangedAsync(await store.GetStatsAsync(ct));
+            await notifier.StatsChangedAsync(await store.GetStatsAsync(CancellationToken.None)); // committed: always broadcast
             return Results.Ok(new { id, address = result.Address, messagesDeleted = result.DeletedMessageIds.Count });
         }).WithHermexTier(Manager, authorization);
 
@@ -236,7 +274,7 @@ internal static class HermexApiEndpoints
             }
             await notifier.InboxClearedAsync();
             await notifier.MailboxesChangedAsync(Array.Empty<long>());
-            await notifier.StatsChangedAsync(await store.GetStatsAsync(ct));
+            await notifier.StatsChangedAsync(await store.GetStatsAsync(CancellationToken.None)); // committed: always broadcast
             return Results.Ok(new
             {
                 messagesDeleted = result.MessagesDeleted,
@@ -332,6 +370,22 @@ internal static class HermexApiEndpoints
         /// and settings.js sends what the page says, so this is the only place it is defined.
         /// </summary>
         public const string ConfirmationText = "RESET";
+    }
+
+    /// <summary>Body of the bulk routes.</summary>
+    internal sealed record BulkRequest(IReadOnlyList<long>? Ids, bool? IsRead)
+    {
+        /// <summary>Upper bound per request: the largest dashboard page (MessageQuery's page-size cap is 500).</summary>
+        public const int MaxIds = 500;
+
+        public static IResult? Validate(BulkRequest? request)
+        {
+            if (request?.Ids is not { Count: > 0 } ids)
+                return Results.BadRequest(new { error = "ids must list at least one message." });
+            if (ids.Count > MaxIds)
+                return Results.BadRequest(new { error = $"At most {MaxIds} ids per request." });
+            return null;
+        }
     }
 
     /// <summary>501 with a JSON reason, for a host-supplied store that lacks a 2.3.0 operation.</summary>
