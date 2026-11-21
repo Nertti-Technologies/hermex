@@ -23,6 +23,11 @@ public interface IInboxNotifier
     /// <summary>Aggregate statistics changed.</summary>
     Task StatsChangedAsync(MailStats stats);
 
+    /// <summary>
+    /// Mailboxes were removed (a mailbox delete or a reset), together with the listed messages. Added in 2.3.0.
+    /// </summary>
+    Task MailboxesChangedAsync(IReadOnlyList<long> deletedMessageIds) => Task.CompletedTask;
+
     /// <summary>A diagnostic log entry was recorded.</summary>
     Task LogAddedAsync(HermexLogEntry entry);
 }
@@ -56,6 +61,9 @@ internal sealed class InboxNotifier : IInboxNotifier
 
     public Task StatsChangedAsync(MailStats stats) =>
         SafeSendAsync(InboxHub.Events.StatsChanged, stats);
+
+    public Task MailboxesChangedAsync(IReadOnlyList<long> deletedMessageIds) =>
+        SafeSendAsync(InboxHub.Events.MailboxesChanged, new { deletedMessageIds });
 
     // Logs are Admin-tier data: only the hub's logs group receives them (see InboxHub.LogsGroup).
     public Task LogAddedAsync(HermexLogEntry entry) =>

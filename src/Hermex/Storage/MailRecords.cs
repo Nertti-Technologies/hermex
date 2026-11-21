@@ -197,6 +197,29 @@ public sealed class Mailbox
     public int UnreadCount { get; init; }
 }
 
+/// <summary>Outcome of <see cref="IMailStore.DeleteMailboxAsync"/>.</summary>
+public sealed class MailboxDeleteResult
+{
+    /// <summary>Address of the deleted mailbox.</summary>
+    public string Address { get; init; } = string.Empty;
+
+    /// <summary>Ids of the messages removed because no other mailbox held them.</summary>
+    public IReadOnlyList<long> DeletedMessageIds { get; init; } = Array.Empty<long>();
+}
+
+/// <summary>Outcome of <see cref="IMailStore.ResetAsync"/>.</summary>
+public sealed class StoreResetResult
+{
+    /// <summary>Messages removed.</summary>
+    public int MessagesDeleted { get; init; }
+
+    /// <summary>Mailboxes removed (INBOX is kept).</summary>
+    public int MailboxesDeleted { get; init; }
+
+    /// <summary>Diagnostic log entries removed.</summary>
+    public int LogsDeleted { get; init; }
+}
+
 /// <summary>One message as it appears inside a mailbox (used by the IMAP server).</summary>
 public sealed class MailboxMessageInfo
 {

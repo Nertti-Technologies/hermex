@@ -33,6 +33,28 @@ public interface IMailStore
     /// <summary>Deletes every message; returns the number removed.</summary>
     Task<int> ClearMessagesAsync(CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Deletes a mailbox and the messages no other mailbox (except INBOX) holds; shared messages stay.
+    /// Returns <c>null</c> when the mailbox is missing. INBOX cannot be deleted
+    /// (<see cref="InvalidOperationException"/>).
+    /// </summary>
+    /// <remarks>Added in 2.3.0; the default implementation throws <see cref="NotSupportedException"/>.</remarks>
+    Task<MailboxDeleteResult?> DeleteMailboxAsync(long mailboxId, CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("This mail store does not support deleting mailboxes.");
+
+    /// <summary>
+    /// Deletes every message, every mailbox except INBOX and every diagnostic log entry, in one transaction.
+    /// Runtime settings are kept.
+    /// </summary>
+    /// <remarks>Added in 2.3.0; the default implementation throws <see cref="NotSupportedException"/>.</remarks>
+    Task<StoreResetResult> ResetAsync(CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("This mail store does not support a reset.");
+
+    /// <summary>Returns a mailbox by id, or <c>null</c>.</summary>
+    /// <remarks>Added in 2.3.0; the default implementation searches <see cref="GetMailboxesAsync"/>.</remarks>
+    async Task<Mailbox?> GetMailboxByIdAsync(long mailboxId, CancellationToken cancellationToken = default) =>
+        (await GetMailboxesAsync(cancellationToken).ConfigureAwait(false)).FirstOrDefault(m => m.Id == mailboxId);
+
     /// <summary>Returns aggregate statistics.</summary>
     Task<MailStats> GetStatsAsync(CancellationToken cancellationToken = default);
 

@@ -338,6 +338,10 @@ a:hover { text-decoration: underline; }
 }
 .m4d-card__title { margin: 0; font-size: 14.5px; font-weight: 700; letter-spacing: -0.01em; }
 .m4d-card__lead { margin: 0 0 14px; color: var(--text-muted); font-size: 13px; }
+.m4d-card--danger { border-color: var(--danger); }
+.m4d-card--danger .m4d-card__title { color: var(--danger); }
+.m4d-reset { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; }
+.m4d-reset .m4d-field { min-width: 220px; }
 
 /* definition lists */
 .m4d-defs { margin: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 14px 18px; }

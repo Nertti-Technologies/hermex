@@ -135,6 +135,7 @@ internal static class HermexApiEndpoints
             var deleting = new HermexDeletingContext
             {
                 MessageId = id,
+                Scope = HermexDeleteScope.Message,
                 HttpContext = events.HttpContext,
                 CancellationToken = events.HttpContext?.RequestAborted ?? CancellationToken.None,
             };
@@ -154,6 +155,7 @@ internal static class HermexApiEndpoints
             var deleting = new HermexDeletingContext
             {
                 MessageId = null,
+                Scope = HermexDeleteScope.All,
                 HttpContext = events.HttpContext,
                 CancellationToken = events.HttpContext?.RequestAborted ?? CancellationToken.None,
             };
@@ -165,6 +167,83 @@ internal static class HermexApiEndpoints
             await notifier.StatsChangedAsync(await store.GetStatsAsync());
             return Results.Ok(new { cleared });
         }).WithHermexTier(Manager, authorization);
+
+        // ---- delete one mailbox (messages other mailboxes share are kept) -
+        api.MapDelete("/mailboxes/{id:long}", async (long id, IMailStore store, IInboxNotifier notifier,
+            HermexEventDispatcher events, CancellationToken ct) =>
+        {
+            var mailbox = await store.GetMailboxByIdAsync(id, ct);
+            if (mailbox is null)
+                return Results.NotFound();
+            if (string.Equals(mailbox.Address, SqliteMailStore.InboxMailboxName, StringComparison.OrdinalIgnoreCase))
+                return Results.BadRequest(new { error = "INBOX cannot be deleted. Use Delete all instead." });
+
+            var deleting = new HermexDeletingContext
+            {
+                Scope = HermexDeleteScope.Mailbox,
+                MailboxAddress = mailbox.Address,
+                HttpContext = events.HttpContext,
+                CancellationToken = ct,
+            };
+            if (!await events.DeletingAsync(deleting))
+                return Forbidden(deleting.RejectionReason);
+
+            MailboxDeleteResult? result;
+            try
+            {
+                result = await store.DeleteMailboxAsync(id, ct);
+            }
+            catch (InvalidOperationException ex)
+            {
+                return Results.BadRequest(new { error = ex.Message });
+            }
+            catch (NotSupportedException ex)
+            {
+                return NotImplemented(ex.Message);
+            }
+            if (result is null)
+                return Results.NotFound();
+            await notifier.MailboxesChangedAsync(result.DeletedMessageIds);
+            await notifier.StatsChangedAsync(await store.GetStatsAsync(ct));
+            return Results.Ok(new { id, address = result.Address, messagesDeleted = result.DeletedMessageIds.Count });
+        }).WithHermexTier(Manager, authorization);
+
+        // ---- full reset: messages, mailboxes and logs (settings are kept) -
+        api.MapPost("/reset", async (ResetRequest? request, IMailStore store, IInboxNotifier notifier,
+            HermexEventDispatcher events, CancellationToken ct) =>
+        {
+            // Typed confirmation: a missing or unreadable body must never fall through to a reset.
+            if (request?.Confirm != ResetRequest.ConfirmationText)
+                return Results.BadRequest(new { error = $"Send {{\"confirm\":\"{ResetRequest.ConfirmationText}\"}} to reset." });
+
+            var deleting = new HermexDeletingContext
+            {
+                Scope = HermexDeleteScope.Reset,
+                HttpContext = events.HttpContext,
+                CancellationToken = ct,
+            };
+            if (!await events.DeletingAsync(deleting))
+                return Forbidden(deleting.RejectionReason);
+
+            StoreResetResult result;
+            try
+            {
+                result = await store.ResetAsync(ct);
+            }
+            catch (NotSupportedException ex)
+            {
+                return NotImplemented(ex.Message);
+            }
+            await notifier.InboxClearedAsync();
+            await notifier.MailboxesChangedAsync(Array.Empty<long>());
+            await notifier.StatsChangedAsync(await store.GetStatsAsync(ct));
+            return Results.Ok(new
+            {
+                messagesDeleted = result.MessagesDeleted,
+                mailboxesDeleted = result.MailboxesDeleted,
+                logsDeleted = result.LogsDeleted,
+            });
+        }).WithHermexTier(Admin, authorization);
 
         // ---- server status, statistics and effective options --------------
         api.MapGet("/status", async (HttpContext http, IMailStore store, HermexRuntimeState state,
@@ -244,6 +323,20 @@ internal static class HermexApiEndpoints
             };
         }).WithHermexTier(Admin, authorization);
     }
+
+    /// <summary>Body of <c>POST /reset</c>.</summary>
+    internal sealed record ResetRequest(string? Confirm)
+    {
+        /// <summary>
+        /// The word the caller must send. Pages/Settings.cshtml renders it into the page (data-confirm-word)
+        /// and settings.js sends what the page says, so this is the only place it is defined.
+        /// </summary>
+        public const string ConfirmationText = "RESET";
+    }
+
+    /// <summary>501 with a JSON reason, for a host-supplied store that lacks a 2.3.0 operation.</summary>
+    private static IResult NotImplemented(string reason) =>
+        Results.Json(new { error = reason }, statusCode: StatusCodes.Status501NotImplemented);
 
     /// <summary>403 with a JSON reason, for actions the host locked or a hook rejected.</summary>
     private static IResult Forbidden(string? reason) =>

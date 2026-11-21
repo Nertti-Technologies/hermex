@@ -3,6 +3,7 @@
 @{
     ViewData["Title"] = "Settings";
     var editable = HermexOptions.AllowRuntimeSettings;
+    var confirmWord = Hermex.Dashboard.HermexApiEndpoints.ResetRequest.ConfirmationText;
 }
 
 <div class="m4d-page">
@@ -153,10 +154,32 @@
         {
             <div class="m4d-form__actions">
                 <button type="button" class="m4d-btn m4d-btn--primary" id="m4d-settings-save">Save settings</button>
-                <button type="button" class="m4d-btn" id="m4d-settings-reload">Reset</button>
+                <button type="button" class="m4d-btn" id="m4d-settings-reload">Discard changes</button>
                 <span class="m4d-form__status" id="m4d-settings-result"></span>
             </div>
         }
+    </section>
+
+    <section class="m4d-card m4d-card--danger" style="margin-top:18px" aria-labelledby="m4d-reset-title">
+        <header class="m4d-card__head">
+            <h2 class="m4d-card__title" id="m4d-reset-title">Reset Hermex</h2>
+        </header>
+        <p class="m4d-card__lead">
+            Deletes every message, every mailbox except INBOX and all diagnostic logs. Settings are kept.
+            Mail clients connected over IMAP are disconnected from deleted mailboxes. This cannot be undone.
+        </p>
+        <div class="m4d-reset">
+            <div class="m4d-field">
+                <label for="m4d-reset-confirm">Type @confirmWord to confirm</label>
+                <input type="text" class="m4d-input" id="m4d-reset-confirm" autocomplete="off" spellcheck="false"
+                       data-confirm-word="@confirmWord" />
+            </div>
+            <button type="button" class="m4d-btn m4d-btn--danger" id="m4d-reset" disabled>
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 3v5h5" /></svg>
+                <span>Reset Hermex</span>
+            </button>
+            <span class="m4d-form__status" id="m4d-reset-result" role="status"></span>
+        </div>
     </section>
 </div>
 

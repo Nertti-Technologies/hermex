@@ -63,6 +63,8 @@ public sealed class AuthorizationTierTests
         { "POST", "/hermex/api/messages/{id}/relay", HermexEndpointTier.Manager },
         { "DELETE", "/hermex/api/messages/{id}", HermexEndpointTier.Manager },
         { "DELETE", "/hermex/api/messages", HermexEndpointTier.Manager },
+        { "DELETE", "/hermex/api/mailboxes/2", HermexEndpointTier.Manager },   // the seeded recipient's mailbox
+        { "POST", "/hermex/api/reset", HermexEndpointTier.Admin },
         { "GET", "/hermex/settings", HermexEndpointTier.Admin },
         { "GET", "/hermex/logs", HermexEndpointTier.Admin },
         { "GET", "/hermex/api/settings", HermexEndpointTier.Admin },

@@ -147,7 +147,46 @@
     }
 
     /* ---------- wiring ---------- */
+    /* ---------- reset ---------- */
+    // The page renders ResetRequest.ConfirmationText (HermexApiEndpoints) into data-confirm-word.
+    function resetWord() {
+        var input = document.getElementById('m4d-reset-confirm');
+        return input ? input.dataset.confirmWord : null;
+    }
+
+    async function resetHermex() {
+        var input = document.getElementById('m4d-reset-confirm');
+        var button = document.getElementById('m4d-reset');
+        var result = document.getElementById('m4d-reset-result');
+        var word = resetWord();
+        if (!word || input.value !== word) return;
+        button.disabled = true;
+        try {
+            var r = await M.api('/reset', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ confirm: word })
+            });
+            input.value = '';
+            result.textContent = 'Deleted ' + r.messagesDeleted + ' message(s), ' + r.mailboxesDeleted +
+                ' mailbox(es) and ' + r.logsDeleted + ' log entr' + (r.logsDeleted === 1 ? 'y' : 'ies') + '.';
+            M.toast('Hermex was reset.', 'success');
+            M.refreshStatus();
+        } catch (e) {
+            result.textContent = '';
+            M.toast('Reset failed: ' + e.message, 'error');
+            button.disabled = input.value !== word;
+        }
+    }
+
     M.ready(function () {
+        var resetInput = document.getElementById('m4d-reset-confirm');
+        var resetButton = document.getElementById('m4d-reset');
+        if (resetInput && resetButton) {
+            resetInput.addEventListener('input', function () { resetButton.disabled = resetInput.value !== resetWord(); });
+            resetButton.addEventListener('click', resetHermex);
+        }
+
         // Save/Reset are not rendered when the host has locked runtime settings.
         var save = document.getElementById('m4d-settings-save');
         var reload = document.getElementById('m4d-settings-reload');

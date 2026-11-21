@@ -136,7 +136,7 @@
     }
     function startHub() {
         var events = ['messageReceived', 'messageUpdated', 'messageDeleted',
-            'inboxCleared', 'statsChanged', 'logAdded'];
+            'inboxCleared', 'statsChanged', 'logAdded', 'mailboxesChanged'];
 
         if (typeof signalR === 'undefined') {
             startPolling();

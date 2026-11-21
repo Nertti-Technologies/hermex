@@ -262,6 +262,105 @@ public sealed class SqliteMailStore : IMailStore, IDisposable
         }
     }
 
+    public async Task<MailboxDeleteResult?> DeleteMailboxAsync(long mailboxId,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+        await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            await using var transaction = connection.BeginTransaction();
+
+            string address;
+            await using (var select = connection.CreateCommand())
+            {
+                select.Transaction = transaction;
+                select.CommandText = "SELECT Address FROM Mailboxes WHERE Id = @Id;";
+                select.Parameters.AddWithValue("@Id", mailboxId);
+                if (await select.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not string found)
+                    return null;
+                address = found;
+            }
+
+            if (string.Equals(address, InboxMailboxName, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("INBOX cannot be deleted.");
+
+            // Messages held only by this mailbox (and the INBOX catch-all) go; messages that another
+            // recipient's mailbox also holds stay, and only lose their link to this mailbox (cascade).
+            var deletedIds = new List<long>();
+            await using (var deleteMessages = connection.CreateCommand())
+            {
+                deleteMessages.Transaction = transaction;
+                deleteMessages.CommandText =
+                    "DELETE FROM Messages WHERE Id IN " +
+                    "(SELECT MessageId FROM MailboxMessages WHERE MailboxId = @Id) " +
+                    "AND NOT EXISTS (SELECT 1 FROM MailboxMessages o JOIN Mailboxes b ON b.Id = o.MailboxId " +
+                    "WHERE o.MessageId = Messages.Id AND o.MailboxId <> @Id AND b.Address <> @Inbox) RETURNING Id;";
+                deleteMessages.Parameters.AddWithValue("@Id", mailboxId);
+                deleteMessages.Parameters.AddWithValue("@Inbox", InboxMailboxName);
+                await using var reader = await deleteMessages.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                    deletedIds.Add(reader.GetInt64(0));
+            }
+
+            await using (var deleteMailbox = connection.CreateCommand())
+            {
+                deleteMailbox.Transaction = transaction;
+                deleteMailbox.CommandText = "DELETE FROM Mailboxes WHERE Id = @Id;";
+                deleteMailbox.Parameters.AddWithValue("@Id", mailboxId);
+                await deleteMailbox.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return new MailboxDeleteResult { Address = address, DeletedMessageIds = deletedIds };
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
+    }
+
+    public async Task<StoreResetResult> ResetAsync(CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+        await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            await using var transaction = connection.BeginTransaction();
+
+            async Task<int> ExecuteAsync(string sql)
+            {
+                await using var command = connection.CreateCommand();
+                command.Transaction = transaction;
+                command.CommandText = sql;
+                command.Parameters.AddWithValue("@Inbox", InboxMailboxName);
+                return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            // IMAP invariant (see ImapSession): message ids are IMAP UIDs and must never be reused, so a reset
+            // deletes rows but never touches sqlite_sequence, never recreates the Messages table and never
+            // swaps the database file. That is what lets INBOX keep its UIDVALIDITY across a reset.
+            var result = new StoreResetResult
+            {
+                MessagesDeleted = await ExecuteAsync("DELETE FROM Messages;").ConfigureAwait(false),
+                MailboxesDeleted = await ExecuteAsync("DELETE FROM Mailboxes WHERE Address <> @Inbox;").ConfigureAwait(false),
+                LogsDeleted = await ExecuteAsync("DELETE FROM Logs;").ConfigureAwait(false),
+            };
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+
+            await using var checkpoint = connection.CreateCommand();
+            checkpoint.CommandText = "PRAGMA wal_checkpoint(TRUNCATE);";
+            await checkpoint.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            return result;
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
+    }
+
     public async Task<int> ApplyRetentionAsync(CancellationToken cancellationToken = default)
     {
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
@@ -315,6 +414,24 @@ public sealed class SqliteMailStore : IMailStore, IDisposable
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             mailboxes.Add(ReadMailbox(reader, uidNext));
         return mailboxes;
+    }
+
+    public async Task<Mailbox?> GetMailboxByIdAsync(long mailboxId, CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        var uidNext = await GetUidNextAsync(connection, cancellationToken).ConfigureAwait(false);
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = MailboxSelectSql +
+            " WHERE m.Id = @Id GROUP BY m.Id, m.Address, m.CreatedAtUtc, m.UidValidity;";
+        command.Parameters.AddWithValue("@Id", mailboxId);
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+            ? ReadMailbox(reader, uidNext)
+            : null;
     }
 
     public async Task<Mailbox?> GetMailboxAsync(string address, CancellationToken cancellationToken = default)
@@ -440,7 +557,10 @@ public sealed class SqliteMailStore : IMailStore, IDisposable
     private static async Task<long> GetUidNextAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT COALESCE(MAX(Id), 0) + 1 FROM Messages;";
+        // UIDNEXT must never go backwards, so it comes from AUTOINCREMENT's high-water mark, not MAX(Id):
+        // after a reset or a delete of the newest messages MAX(Id) drops, but the next id does not.
+        command.CommandText =
+            "SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'Messages'), 0) + 1;";
         return Convert.ToInt64(
             await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
             CultureInfo.InvariantCulture);
@@ -953,6 +1073,8 @@ public sealed class SqliteMailStore : IMailStore, IDisposable
     private const string SchemaSql = """
         PRAGMA journal_mode=WAL;
 
+        -- Messages.Id is the IMAP UID. AUTOINCREMENT guarantees ids are never reused, which IMAP needs
+        -- (RFC 9051 §2.3.1.1); ResetAsync and every delete keep sqlite_sequence. See ImapSession.
         CREATE TABLE IF NOT EXISTS Messages (
             Id              INTEGER PRIMARY KEY AUTOINCREMENT,
             SessionId       TEXT    NOT NULL,

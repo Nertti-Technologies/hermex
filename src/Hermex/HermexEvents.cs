@@ -132,8 +132,42 @@ public sealed class HermexRelayingContext : HermexVetoContext
 /// <summary>Context for <see cref="HermexEvents.OnDeleting"/>.</summary>
 public sealed class HermexDeletingContext : HermexVetoContext
 {
-    /// <summary>The message being deleted, or <c>null</c> when the whole inbox is being cleared.</summary>
+    /// <summary>
+    /// The message being deleted when <see cref="Scope"/> is <see cref="HermexDeleteScope.Message"/>;
+    /// otherwise <c>null</c> (as for clearing every message in 2.1).
+    /// </summary>
     public long? MessageId { get; init; }
+
+    /// <summary>
+    /// What is being deleted. Added in 2.3.0. Hooks should switch on this rather than on
+    /// <see cref="MessageId"/>: a mailbox delete or a reset removes messages without listing them here.
+    /// </summary>
+    public required HermexDeleteScope Scope { get; init; }
+
+    /// <summary>The messages being deleted when <see cref="Scope"/> is <see cref="HermexDeleteScope.Messages"/>.</summary>
+    public IReadOnlyList<long> MessageIds { get; init; } = Array.Empty<long>();
+
+    /// <summary>The mailbox being deleted when <see cref="Scope"/> is <see cref="HermexDeleteScope.Mailbox"/>.</summary>
+    public string? MailboxAddress { get; init; }
+}
+
+/// <summary>What a <see cref="HermexDeletingContext"/> deletes.</summary>
+public enum HermexDeleteScope
+{
+    /// <summary>One message (<see cref="HermexDeletingContext.MessageId"/>).</summary>
+    Message,
+
+    /// <summary>A selection of messages (<see cref="HermexDeletingContext.MessageIds"/>).</summary>
+    Messages,
+
+    /// <summary>One mailbox and the messages only it holds (<see cref="HermexDeletingContext.MailboxAddress"/>).</summary>
+    Mailbox,
+
+    /// <summary>Every message in every mailbox.</summary>
+    All,
+
+    /// <summary>Every message, mailbox and diagnostic log entry; settings are kept.</summary>
+    Reset,
 }
 
 /// <summary>Context for <see cref="HermexEvents.OnSettingsChanged"/>.</summary>

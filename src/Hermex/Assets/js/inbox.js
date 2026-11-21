@@ -23,6 +23,7 @@
         el.unread = document.getElementById('m4d-unread-only');
         el.refresh = document.getElementById('m4d-refresh');
         el.clear = document.getElementById('m4d-clear');
+        el.deleteMailbox = document.getElementById('m4d-delete-mailbox');
         el.mailboxList = document.getElementById('m4d-mailbox-list');
         el.statTotal = document.getElementById('m4d-stat-total');
         el.statUnread = document.getElementById('m4d-stat-unread');
@@ -40,6 +41,10 @@
 
     function renderMailboxes(mailboxes) {
         if (!el.mailboxList) return;
+        state.mailboxes = mailboxes;
+        // The selected mailbox may have been deleted (here, in another tab, or by a reset).
+        var lost = state.mailboxId != null && !mailboxes.some(function (m) { return m.id === state.mailboxId; });
+        if (lost) state.mailboxId = null;
         mailboxes.sort(function (a, b) {
             if (a.address === 'INBOX') return -1;
             if (b.address === 'INBOX') return 1;
@@ -48,6 +53,12 @@
         if (state.mailboxId == null) {
             var inbox = mailboxes.find(function (m) { return m.address === 'INBOX'; });
             if (inbox) state.mailboxId = inbox.id;
+        }
+        if (lost) {
+            state.page = 1;
+            state.selectedId = null;
+            showDetailEmpty();
+            loadList();
         }
 
         el.mailboxList.innerHTML = '';
@@ -65,6 +76,36 @@
             li.addEventListener('click', function () { selectMailbox(m.id); });
             el.mailboxList.appendChild(li);
         });
+        updateMailboxActions();
+    }
+
+    function selectedMailbox() {
+        return (state.mailboxes || []).find(function (m) { return m.id === state.mailboxId; }) || null;
+    }
+
+    function updateMailboxActions() {
+        if (!el.deleteMailbox) return;
+        var m = selectedMailbox();
+        el.deleteMailbox.hidden = !m || m.address === 'INBOX';
+        if (m) el.deleteMailbox.setAttribute('aria-label', 'Delete mailbox ' + m.address);
+    }
+
+    async function deleteMailbox() {
+        var m = selectedMailbox();
+        if (!m || m.address === 'INBOX') return;
+        if (!window.confirm('Delete the mailbox ' + m.address + '?\n\nMessages that were also sent to other ' +
+            'recipients stay in their mailboxes and in All mail. This cannot be undone.')) return;
+        try {
+            var r = await M.api('/mailboxes/' + m.id, { method: 'DELETE' });
+            M.toast('Deleted ' + m.address + ' and ' + r.messagesDeleted + ' message(s).');
+            state.mailboxId = null;
+            state.selectedId = null;
+            showDetailEmpty();
+            await loadMailboxes();
+            loadList();
+        } catch (e) {
+            M.toast('Could not delete the mailbox.', 'error');
+        }
     }
 
     function selectMailbox(id) {
@@ -73,6 +114,7 @@
         el.mailboxList.querySelectorAll('.m4d-mailbox').forEach(function (row) {
             row.classList.toggle('m4d-mailbox--active', Number(row.dataset.mailboxId) === id);
         });
+        updateMailboxActions();
         loadList();
     }
 
@@ -433,6 +475,16 @@
         });
         el.refresh.addEventListener('click', function () { loadList(); M.refreshStatus(); });
         el.clear.addEventListener('click', clearInbox);
+        if (el.deleteMailbox) el.deleteMailbox.addEventListener('click', deleteMailbox);
+        M.onHub('mailboxesChanged', function (p) {
+            var deleted = (p && p.deletedMessageIds) || [];
+            if (state.selectedId != null && deleted.indexOf(state.selectedId) >= 0) {
+                state.selectedId = null;
+                showDetailEmpty();
+            }
+            loadMailboxes();
+            loadList();
+        });
 
         var debouncedReload = M.debounce(function () { loadList(); loadMailboxes(); }, 350);
         M.onHub('messageReceived', debouncedReload);
