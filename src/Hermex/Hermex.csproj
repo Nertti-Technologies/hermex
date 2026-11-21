@@ -59,4 +59,9 @@
     <PackageReference Include="Microsoft.Data.Sqlite" Version="11.0.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Unit tests for internal parsers (search, HTML checks, authentication headers). -->
+    <InternalsVisibleTo Include="Hermex.Tests" />
+  </ItemGroup>
+
 </Project>

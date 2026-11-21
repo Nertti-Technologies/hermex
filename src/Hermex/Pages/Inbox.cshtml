@@ -15,8 +15,20 @@
         <div class="m4d-pane__head">
             <div class="m4d-search">
                 <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8" /><path d="m21 21-4.3-4.3" /></svg>
-                <input type="search" id="m4d-search" placeholder="Search subject, sender, recipient…" autocomplete="off" />
+                <input type="search" id="m4d-search" placeholder="Search, or from: to: subject: is:unread…" autocomplete="off"
+                       aria-describedby="m4d-search-help" />
             </div>
+            <details class="m4d-search-help" id="m4d-search-help">
+                <summary>Search operators</summary>
+                <dl>
+                    <div><dt><code>from:</code> <code>to:</code> <code>cc:</code> <code>subject:</code> <code>mailbox:</code></dt><dd>Text in that field</dd></div>
+                    <div><dt><code>is:read</code> <code>is:unread</code></dt><dd>Read state</dd></div>
+                    <div><dt><code>has:attachment</code> <code>has:html</code></dt><dd>Content</dd></div>
+                    <div><dt><code>larger:10kb</code> <code>smaller:1mb</code></dt><dd>Message size</dd></div>
+                    <div><dt><code>after:2026-11-20</code> <code>before:2026-11-21</code></dt><dd>Received date (UTC)</dd></div>
+                    <div><dt><code>"exact phrase"</code> <code>-word</code></dt><dd>Phrase; exclude a term</dd></div>
+                </dl>
+            </details>
             <div class="m4d-pane__tools">
                 <label class="m4d-toggle">
                     <input type="checkbox" id="m4d-unread-only" />

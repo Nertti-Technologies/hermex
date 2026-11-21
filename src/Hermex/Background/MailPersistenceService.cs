@@ -252,7 +252,7 @@ internal sealed class MailPersistenceService : BackgroundService
             : mime.From?.Address ?? received.MailFrom;
 
         var toDisplay = mime.To.Count > 0
-            ? string.Join(", ", mime.To.Select(a => a.ToString()))
+            ? MimeAddress.FormatList(mime.To)
             : string.Join(", ", received.Recipients);
 
         return new MessageRecord
@@ -264,6 +264,7 @@ internal sealed class MailPersistenceService : BackgroundService
             FromAddress = mime.From?.Address ?? received.MailFrom,
             FromDisplay = string.IsNullOrWhiteSpace(fromDisplay) ? "(unknown sender)" : fromDisplay,
             ToDisplay = toDisplay,
+            CcDisplay = mime.Cc.Count > 0 ? MimeAddress.FormatList(mime.Cc) : null,
             Subject = string.IsNullOrEmpty(mime.Subject) ? "(no subject)" : mime.Subject!,
             HasHtml = mime.HasHtmlBody,
             HasText = mime.HasTextBody,

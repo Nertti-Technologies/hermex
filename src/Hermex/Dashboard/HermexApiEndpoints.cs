@@ -30,6 +30,10 @@ internal static class HermexApiEndpoints
             int? page, int? pageSize, string? search, bool? unread, long? mailbox,
             IMailStore store, HermexOptions options) =>
         {
+            // Validate at the boundary instead of letting the parser cut a long query mid-term.
+            if (search?.Length > MessageSearch.MaxQueryLength)
+                return Results.BadRequest(new { error = $"Search is limited to {MessageSearch.MaxQueryLength} characters." });
+
             var result = await store.GetMessagesAsync(new MessageQuery
             {
                 Page = page ?? 1,

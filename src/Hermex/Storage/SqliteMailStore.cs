@@ -165,6 +165,7 @@ public sealed class SqliteMailStore : IMailStore, IDisposable
                 insertMessage.Parameters.AddWithValue("@FromAddress", record.FromAddress);
                 insertMessage.Parameters.AddWithValue("@FromDisplay", record.FromDisplay);
                 insertMessage.Parameters.AddWithValue("@ToDisplay", record.ToDisplay);
+                insertMessage.Parameters.AddWithValue("@CcDisplay", (object?)record.CcDisplay ?? DBNull.Value);
                 insertMessage.Parameters.AddWithValue("@Subject", record.Subject);
                 insertMessage.Parameters.AddWithValue("@HasHtml", record.HasHtml);
                 insertMessage.Parameters.AddWithValue("@HasText", record.HasText);
@@ -981,8 +982,8 @@ public sealed class SqliteMailStore : IMailStore, IDisposable
             FromDisplay = message.From?.DisplayName is { Length: > 0 } name ? name
                 : message.From?.Address ?? envelopeFrom,
             FromAddress = message.From?.Address ?? envelopeFrom,
-            ToDisplay = FormatAddresses(message.To),
-            CcDisplay = FormatAddresses(message.Cc),
+            ToDisplay = MimeAddress.FormatList(message.To),
+            CcDisplay = MimeAddress.FormatList(message.Cc),
             TextBody = message.TextBody,
             HtmlBody = message.HtmlBody,
             MessageIdHeader = message.MessageId,
@@ -1018,19 +1019,12 @@ public sealed class SqliteMailStore : IMailStore, IDisposable
         };
     }
 
-    private static string FormatAddresses(IReadOnlyList<MimeAddress> addresses) =>
-        addresses.Count == 0 ? string.Empty : string.Join(", ", addresses.Select(a => a.ToString()));
 
     private static string BuildFilter(MessageQuery query, List<KeyValuePair<string, object>> parameters)
     {
         var clauses = new List<string>();
 
-        if (!string.IsNullOrWhiteSpace(query.Search))
-        {
-            clauses.Add("(Subject LIKE @Search OR FromDisplay LIKE @Search " +
-                        "OR FromAddress LIKE @Search OR ToDisplay LIKE @Search)");
-            parameters.Add(new KeyValuePair<string, object>("@Search", "%" + query.Search.Trim() + "%"));
-        }
+        MessageSearch.AppendClauses(query.Search, clauses, parameters);
 
         if (query.UnreadOnly)
             clauses.Add("IsRead = 0");
@@ -1066,12 +1060,23 @@ public sealed class SqliteMailStore : IMailStore, IDisposable
     /// Applies additive schema migrations. Each statement is idempotent in effect — a
     /// "duplicate column" error simply means the column already exists.
     /// </summary>
-    private static async Task ApplyMigrationsAsync(SqliteConnection connection, CancellationToken cancellationToken)
+    /// <summary>
+    /// Data version kept in <c>PRAGMA user_version</c>. 1 = 2.3.0: <c>CcDisplay</c> backfilled for rows stored
+    /// before the column existed.
+    /// </summary>
+    private const int CurrentDataVersion = 1;
+
+    /// <summary>Rows parsed per backfill transaction (estimate: keeps each write-lock hold short).</summary>
+    private const int BackfillBatchSize = 200;
+
+    private async Task ApplyMigrationsAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {
         string[] migrations =
         {
             "ALTER TABLE Messages ADD COLUMN SecuredWithTls INTEGER NOT NULL DEFAULT 0;",
             "ALTER TABLE Messages ADD COLUMN Transcript TEXT;",
+            // 2.3.0 (ADR-0003 D9): Cc for `cc:` search; backfilled below. NULL = the message has no Cc.
+            "ALTER TABLE Messages ADD COLUMN CcDisplay TEXT;",
         };
 
         foreach (var sql in migrations)
@@ -1087,8 +1092,84 @@ public sealed class SqliteMailStore : IMailStore, IDisposable
                 // The column already exists on a database created by a newer schema.
             }
         }
+
+        await using var version = connection.CreateCommand();
+        version.CommandText = "PRAGMA user_version;";
+        var dataVersion = Convert.ToInt32(await version.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
+            CultureInfo.InvariantCulture);
+        if (dataVersion < 1)
+            await BackfillCcDisplayAsync(connection, cancellationToken).ConfigureAwait(false);
+        if (dataVersion < CurrentDataVersion)
+        {
+            await using var setVersion = connection.CreateCommand();
+            setVersion.CommandText = $"PRAGMA user_version = {CurrentDataVersion};"; // constant, not input
+            await setVersion.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
     }
 
+    /// <summary>
+    /// Fills <c>CcDisplay</c> for rows stored before 2.3.0 by re-parsing their raw message. Runs once (guarded
+    /// by <c>user_version</c>, set only after it finishes, so an interrupted run resumes). Worst case: one parse
+    /// per stored message, bounded by retention (default 5,000 messages).
+    /// </summary>
+    private async Task BackfillCcDisplayAsync(SqliteConnection connection, CancellationToken cancellationToken)
+    {
+        var ids = new List<long>();
+        await using (var select = connection.CreateCommand())
+        {
+            select.CommandText = "SELECT Id FROM Messages WHERE CcDisplay IS NULL ORDER BY Id;";
+            await using var reader = await select.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                ids.Add(reader.GetInt64(0));
+        }
+
+        var filled = 0;
+        foreach (var batch in ids.Chunk(BackfillBatchSize))
+        {
+            await using var transaction = connection.BeginTransaction();
+            await using var read = connection.CreateCommand();
+            read.Transaction = transaction;
+            read.CommandText = "SELECT RawData FROM MessageRaw WHERE MessageId = @Id;";
+            var readId = read.Parameters.Add("@Id", SqliteType.Integer);
+
+            await using var update = connection.CreateCommand();
+            update.Transaction = transaction;
+            update.CommandText = "UPDATE Messages SET CcDisplay = @Cc WHERE Id = @Id;";
+            var updateCc = update.Parameters.Add("@Cc", SqliteType.Text);
+            var updateId = update.Parameters.Add("@Id", SqliteType.Integer);
+
+            foreach (var id in batch)
+            {
+                readId.Value = id;
+                if (await read.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not byte[] raw)
+                    continue;
+                string cc;
+                try
+                {
+                    cc = MimeAddress.FormatList(MimeParser.Parse(raw).Cc);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    // One unparseable stored message must not stop the store from opening; it keeps no Cc.
+                    _logger.LogWarning("Hermex: could not read Cc for stored message {Id} ({Error}).", id, ex.GetType().Name);
+                    continue;
+                }
+                if (cc.Length == 0)
+                    continue;
+                updateCc.Value = cc;
+                updateId.Value = id;
+                await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                filled++;
+            }
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        if (filled > 0)
+            _logger.LogInformation("Hermex: filled the Cc search column for {Count} stored message(s).", filled);
+    }
+
+    // Search's before:/after: (MessageSearch) compare ReceivedAtUtc as text against "yyyy-MM-dd", which is
+    // only correct while this stays round-trip ("o") UTC text. Changing the format breaks date search.
     private static string FormatDate(DateTimeOffset value) =>
         value.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture);
 
@@ -1136,7 +1217,8 @@ public sealed class SqliteMailStore : IMailStore, IDisposable
             IsRead          INTEGER NOT NULL DEFAULT 0,
             RemoteEndPoint  TEXT    NOT NULL,
             SecuredWithTls  INTEGER NOT NULL DEFAULT 0,
-            Transcript      TEXT
+            Transcript      TEXT,
+            CcDisplay       TEXT
         );
 
         CREATE TABLE IF NOT EXISTS MessageRaw (
@@ -1177,17 +1259,18 @@ public sealed class SqliteMailStore : IMailStore, IDisposable
         CREATE INDEX IF NOT EXISTS IX_Messages_IsRead         ON Messages(IsRead);
         CREATE INDEX IF NOT EXISTS IX_Logs_Id_Desc            ON Logs(Id DESC);
         CREATE INDEX IF NOT EXISTS IX_MailboxMessages_Message ON MailboxMessages(MessageId);
+        CREATE INDEX IF NOT EXISTS IX_Messages_ReceivedAtUtc  ON Messages(ReceivedAtUtc);
         """;
 
     private const string InsertMessageSql = """
         INSERT INTO Messages
             (SessionId, ReceivedAtUtc, EnvelopeFrom, EnvelopeTo, FromAddress, FromDisplay,
              ToDisplay, Subject, HasHtml, HasText, RawSize, AttachmentCount, IsRead,
-             RemoteEndPoint, SecuredWithTls, Transcript)
+             RemoteEndPoint, SecuredWithTls, Transcript, CcDisplay)
         VALUES
             (@SessionId, @ReceivedAtUtc, @EnvelopeFrom, @EnvelopeTo, @FromAddress, @FromDisplay,
              @ToDisplay, @Subject, @HasHtml, @HasText, @RawSize, @AttachmentCount, 0,
-             @RemoteEndPoint, @SecuredWithTls, @Transcript)
+             @RemoteEndPoint, @SecuredWithTls, @Transcript, @CcDisplay)
         RETURNING Id;
         """;
 }

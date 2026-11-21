@@ -27,6 +27,9 @@ public sealed class MessageRecord
     /// <summary>The <c>To</c> header recipients, formatted for display.</summary>
     public string ToDisplay { get; init; } = string.Empty;
 
+    /// <summary>Cc header addresses for display and <c>cc:</c> search, or <c>null</c> when there is no Cc.</summary>
+    public string? CcDisplay { get; init; }
+
     /// <summary>The decoded subject.</summary>
     public string Subject { get; init; } = string.Empty;
 
