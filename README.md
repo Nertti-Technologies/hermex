@@ -243,6 +243,11 @@ The build runs the recommended .NET analyzers (`AnalysisLevel=latest-recommended
 warning as an error, including NuGet vulnerability advisories. Deliberate opt-outs are recorded,
 with their reason, in `.editorconfig`.
 
+## What's new in 2.2.1
+
+- **Package page:** the README now renders on nuget.org (the header showed as raw HTML since 2.0.0).
+  No code changes.
+
 ## What's new in 2.2.0
 
 - **Deprecated:** `AddMail4Dev()` and `UseMail4Dev()` are marked `[Obsolete]` with warning
