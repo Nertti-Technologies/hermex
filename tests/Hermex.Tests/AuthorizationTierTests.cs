@@ -57,6 +57,7 @@ public sealed class AuthorizationTierTests
         { "GET", "/hermex/api/messages/{id}/html", HermexEndpointTier.Viewer },
         { "GET", "/hermex/api/messages/{id}/raw", HermexEndpointTier.Viewer },
         { "GET", "/hermex/api/messages/{id}/checks", HermexEndpointTier.Viewer },
+        { "GET", "/hermex/api/messages/wait?timeout=1", HermexEndpointTier.Viewer },
         { "GET", "/hermex/api/messages/{id}/attachments/0", HermexEndpointTier.Viewer },
         { "POST", "/hermex/api/messages/{id}/read", HermexEndpointTier.Viewer },
         { "GET", "/hermex/api/status", HermexEndpointTier.Viewer },

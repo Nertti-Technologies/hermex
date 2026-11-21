@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- ADR-0003 D7: a test helper with no dependency on Hermex or on any test framework; it talks to a
+       running Hermex over HTTP, so it also works against a host in another process. -->
+  <PropertyGroup>
+    <TargetFrameworks>net10.0;net11.0</TargetFrameworks>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+
+    <IsPackable>true</IsPackable>
+    <PackageId>Hermex.Testing</PackageId>
+    <AssemblyName>Hermex.Testing</AssemblyName>
+    <RootNamespace>Hermex.Testing</RootNamespace>
+    <Title>Hermex.Testing — wait for and inspect captured mail in tests</Title>
+    <Version>2.2.1</Version>
+    <Description>Test helper for Hermex: wait for the email your app sends, then read its subject, body, HTML and links. Works with WebApplicationFactory or any running Hermex host. No dependencies.</Description>
+    <PackageTags>smtp;email;testing;integration-tests;hermex</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/Nertti-Technologies/hermex</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/Nertti-Technologies/hermex</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <Deterministic>true</Deterministic>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+</Project>

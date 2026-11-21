@@ -1,3 +1,5 @@
+using Microsoft.Data.Sqlite;
+using System.Globalization;
 using System.Text.RegularExpressions;
 using Hermex.Analysis;
 using Hermex.Configuration;
@@ -45,6 +47,54 @@ internal static class HermexApiEndpoints
                 MailboxId = mailbox,
             });
             return Results.Json(result);
+        }).WithHermexTier(Viewer, authorization);
+
+        // ---- wait for a message (ADR-0003 D6) ------------------------------
+        api.MapGet("/messages/wait", async (
+            string? to, string? from, string? subject, string? mailbox, long? after, int? timeout,
+            IMailStore store, MessageArrivals arrivals, HttpContext http) =>
+        {
+            var seconds = timeout ?? WaitRequest.DefaultTimeoutSeconds;
+            if (seconds is < 1 or > WaitRequest.MaxTimeoutSeconds)
+                return Results.BadRequest(new { error = $"timeout must be 1 to {WaitRequest.MaxTimeoutSeconds} seconds." });
+            if (after < 0)
+                return Results.BadRequest(new { error = "after must not be negative." });
+            if (WaitRequest.BuildSearch(("to", to), ("from", from), ("subject", subject), ("mailbox", mailbox)) is not { } search)
+                return Results.BadRequest(new { error = WaitRequest.InvalidValue });
+
+            if (!arrivals.TryEnter())
+                return Results.StatusCode(StatusCodes.Status429TooManyRequests);
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(http.RequestAborted);
+            try
+            {
+                deadline.CancelAfter(TimeSpan.FromSeconds(seconds));
+                var ct = deadline.Token;
+
+                // Default cursor: the newest id now, so mail stored before this request never matches.
+                var cursor = after
+                    ?? ((await store.GetMessagesAsync(new MessageQuery { PageSize = 1, SkipCount = true }, ct)).Items is [var newest, ..]
+                        ? newest.Id : 0);
+                var query = new MessageQuery { Search = search, AfterId = cursor, OldestFirst = true, PageSize = 1, SkipCount = true };
+                http.Response.Headers[HermexRoutes.CursorHeader] = cursor.ToString(CultureInfo.InvariantCulture);
+
+                while (true)
+                {
+                    var signal = arrivals.Next; // before the check, so nothing stored in between is missed
+                    if ((await store.GetMessagesAsync(query, ct)).Items is [var match, ..])
+                        return Results.Json(match);
+                    await signal.WaitAsync(ct);
+                }
+            }
+            catch (Exception ex) when (ex is OperationCanceledException || (ex is SqliteException && deadline.IsCancellationRequested))
+            {
+                // Timed out (or the client left, in which case nobody reads it). A deadline that interrupts a
+                // running SQLite statement surfaces as SqliteException (SQLITE_INTERRUPT), not cancellation.
+                return Results.NoContent();
+            }
+            finally
+            {
+                arrivals.Exit();
+            }
         }).WithHermexTier(Viewer, authorization);
 
         // ---- mailboxes -----------------------------------------------------
@@ -434,6 +484,42 @@ internal static class HermexApiEndpoints
             statusCode: StatusCodes.Status403Forbidden);
 
     /// <summary>Rewrites <c>cid:</c> references in an HTML body to inline-attachment URLs.</summary>
+
+    /// <summary>Request rules for <c>GET /messages/wait</c> (ADR-0003 D6).</summary>
+    internal static class WaitRequest
+    {
+        /// <summary>Default wait (ADR-0003 D6).</summary>
+        public const int DefaultTimeoutSeconds = 30;
+
+        /// <summary>Longest wait per request (estimate, from a vendor's documented 120,000 ms maximum).
+        /// The Hermex.Testing client splits longer waits into several requests.</summary>
+        public const int MaxTimeoutSeconds = 120;
+
+        /// <summary>Longest criterion value (estimate: longer than any address or subject a test matches on).</summary>
+        public const int MaxValueLength = 200;
+
+        public const string InvalidValue =
+            "to, from, subject and mailbox are limited to 200 characters each (and the search they form to 512), " +
+            "and must not contain quotes or control characters.";
+
+        /// <summary>Turns the criteria into the search syntax (ADR-0003 D9), or null when a value is invalid.</summary>
+        public static string? BuildSearch(params (string Operator, string? Value)[] criteria)
+        {
+            var terms = new List<string>();
+            foreach (var (op, value) in criteria)
+            {
+                if (string.IsNullOrEmpty(value))
+                    continue;
+                if (value.Length > MaxValueLength || value.Any(c => c == '"' || char.IsControl(c)))
+                    return null;
+                terms.Add($"{op}:\"{value}\"");
+            }
+            var search = string.Join(' ', terms);
+            // The search parser ignores text past its limit; refuse rather than match on fewer criteria.
+            return search.Length > MessageSearch.MaxQueryLength ? null : search;
+        }
+    }
+
     private static string RewriteCidLinks(long messageId, MessageDetail detail)
     {
         var html = detail.HtmlBody ?? string.Empty;

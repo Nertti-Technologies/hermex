@@ -764,9 +764,10 @@ public sealed class SqliteMailStore : IMailStore, IDisposable
 
         await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
 
-        int total;
-        await using (var countCommand = connection.CreateCommand())
+        var total = 0;
+        if (!query.SkipCount)
         {
+            await using var countCommand = connection.CreateCommand();
             countCommand.CommandText = "SELECT COUNT(*) FROM Messages" + filter + ";";
             foreach (var p in parameters)
                 countCommand.Parameters.AddWithValue(p.Key, p.Value);
@@ -781,7 +782,7 @@ public sealed class SqliteMailStore : IMailStore, IDisposable
             listCommand.CommandText =
                 "SELECT Id, ReceivedAtUtc, FromDisplay, FromAddress, ToDisplay, Subject, " +
                 "HasHtml, AttachmentCount, RawSize, IsRead FROM Messages" + filter +
-                " ORDER BY Id DESC LIMIT @Limit OFFSET @Offset;";
+                (query.OldestFirst ? " ORDER BY Id ASC" : " ORDER BY Id DESC") + " LIMIT @Limit OFFSET @Offset;";
             foreach (var p in parameters)
                 listCommand.Parameters.AddWithValue(p.Key, p.Value);
             listCommand.Parameters.AddWithValue("@Limit", pageSize);
@@ -1028,6 +1029,12 @@ public sealed class SqliteMailStore : IMailStore, IDisposable
 
         if (query.UnreadOnly)
             clauses.Add("IsRead = 0");
+
+        if (query.AfterId is { } afterId)
+        {
+            clauses.Add("Id > @AfterId");
+            parameters.Add(new KeyValuePair<string, object>("@AfterId", afterId));
+        }
 
         if (query.MailboxId is { } mailboxId)
         {

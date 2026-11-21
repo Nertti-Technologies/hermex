@@ -57,6 +57,7 @@ public static class HermexServiceCollectionExtensions
 
         // Realtime dashboard updates.
         services.AddSingleton<IInboxNotifier, InboxNotifier>();
+        services.AddSingleton<MessageArrivals>();
         services.AddSignalR();
 
         // Background workers. The SMTP and IMAP listeners are also registered as concrete

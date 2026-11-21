@@ -178,6 +178,15 @@ public sealed class MessageQuery
 
     /// <summary>When set, only messages routed to this mailbox are returned.</summary>
     public long? MailboxId { get; set; }
+
+    /// <summary>When set, only messages with an id greater than this are returned (ids only grow).</summary>
+    public long? AfterId { get; set; }
+
+    /// <summary>When true, the oldest message comes first; by default the newest does.</summary>
+    public bool OldestFirst { get; set; }
+
+    /// <summary>Skips the total count (TotalCount is then 0); for callers that only read the first item.</summary>
+    internal bool SkipCount { get; set; }
 }
 
 /// <summary>A mailbox — created automatically for each recipient address.</summary>

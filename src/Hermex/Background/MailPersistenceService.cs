@@ -24,6 +24,7 @@ internal sealed class MailPersistenceService : BackgroundService
     private const long DroppedEventWarningInterval = 1_000;
 
     private readonly MailWriteQueue _queue;
+    private readonly MessageArrivals _arrivals;
     private readonly IMailStore _store;
     private readonly IInboxNotifier _notifier;
     private readonly IMailRelayService _relay;
@@ -46,8 +47,10 @@ internal sealed class MailPersistenceService : BackgroundService
         IHermexEventLog eventLog,
         HermexOptions options,
         HermexEventDispatcher events,
+        MessageArrivals arrivals,
         ILogger<MailPersistenceService> logger)
     {
+        _arrivals = arrivals;
         _queue = queue;
         _store = store;
         _notifier = notifier;
@@ -152,6 +155,9 @@ internal sealed class MailPersistenceService : BackgroundService
             _eventLog.Error("Storage", $"Failed to persist {records.Count} message(s): {ex.Message}");
             return;
         }
+
+        // Committed: wake wait-API callers (ADR-0003 D6) before the slower dashboard notifications.
+        _arrivals.Pulse();
 
         foreach (var record in records)
             await _notifier.MessageReceivedAsync(ToSummary(record)).ConfigureAwait(false);
