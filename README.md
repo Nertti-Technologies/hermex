@@ -31,8 +31,10 @@ container. Hermex runs **inside your application** as a set of background servic
   background threads; your request pipeline never touches the mail store.
 
 > **Upgrading from 2.0?** The registration methods are now `AddHermex()` and `UseHermex()`.
-> The earlier names `AddMail4Dev()` and `UseMail4Dev()` still work exactly as before, so no code
-> change is needed today; they will be deprecated in a future release.
+> The earlier names `AddMail4Dev()` and `UseMail4Dev()` still work, but are deprecated since 2.2.0
+> (warning `HERMEX0001`) and will be removed in 3.0. Rename the two calls; nothing else changes.
+> If you build with warnings as errors and need time, add `<NoWarn>$(NoWarn);HERMEX0001</NoWarn>`
+> to your project for now. Suppressing `CS0618` does not cover this warning; use `HERMEX0001`.
 
 ## Features
 
@@ -245,12 +247,17 @@ The build runs the recommended .NET analyzers (`AnalysisLevel=latest-recommended
 warning as an error, including NuGet vulnerability advisories. Deliberate opt-outs are recorded,
 with their reason, in `.editorconfig`.
 
+## What's new in 2.2.0
+
+- **Deprecated:** `AddMail4Dev()` and `UseMail4Dev()` are marked `[Obsolete]` with warning
+  `HERMEX0001`; use `AddHermex()` and `UseHermex()`. They still work, and are removed in 3.0.
+
 ## What's new in 2.1.0
 
 Everything is additive and every default keeps 2.0.0 behaviour.
 
 - **New method names:** `AddHermex()` and `UseHermex()`. `AddMail4Dev()` and `UseMail4Dev()` keep
-  working unchanged and will be deprecated in a future release.
+  working unchanged and will be deprecated in a future release (done in 2.2.0).
 - **Host control:** `AllowRuntimeSettings`, authorization tiers, a relay host allow-list,
   `HermexEvents` hooks and the public `IHermexSettings`. See [Running Hermex for a team](#running-hermex-for-a-team).
 - **Diagnostics:** saved settings that fail validation are now skipped with a warning instead of silently.

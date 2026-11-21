@@ -85,11 +85,12 @@ public static class HermexServiceCollectionExtensions
     }
 
     /// <summary>
-    /// Earlier name of <see cref="AddHermex"/>, kept so existing applications keep working; it
-    /// behaves identically. Prefer <c>AddHermex()</c>: this name will be deprecated in a future release.
+    /// Earlier name of <see cref="AddHermex"/>; it behaves identically. Deprecated in 2.2.0 and
+    /// removed in 3.0: use <c>AddHermex()</c>.
     /// </summary>
     /// <param name="services">The service collection.</param>
     /// <param name="configure">Optional configuration callback.</param>
+    [Obsolete(HermexDeprecations.EarlierNamesMessage, DiagnosticId = HermexDeprecations.EarlierNamesId)]
     public static IServiceCollection AddMail4Dev(this IServiceCollection services,
         Action<HermexOptions>? configure = null) =>
         services.AddHermex(configure);
