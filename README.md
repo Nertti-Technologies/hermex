@@ -205,7 +205,7 @@ var message = await hermex.WaitForMessageAsync(
 var links = await hermex.GetLinksAsync(message.Id);
 ```
 
-See the [Hermex.Testing README](src/Hermex.Testing/README.md) for the full API.
+See the [Hermex.Testing README](https://github.com/Nertti-Technologies/hermex/blob/main/src/Hermex.Testing/README.md) for the full API.
 
 ## Webhooks
 
