@@ -118,6 +118,7 @@
         if (m.hasAttachments) chips += '<span class="m4d-chip">' + ICON_CLIP + m.attachmentCount + '</span>';
 
         li.innerHTML =
+            (m.isRead ? '' : '<span class="m4d-sr-only m4d-msg__unread-label">Unread. </span>') +
             '<span class="m4d-msg__from">' + M.escapeHtml(m.from || m.fromAddress || '(unknown sender)') + '</span>' +
             '<span class="m4d-msg__time">' + M.escapeHtml(M.formatRelative(m.receivedAtUtc)) + '</span>' +
             '<span class="m4d-msg__subject">' + M.escapeHtml(m.subject || '(no subject)') + '</span>' +
@@ -174,8 +175,7 @@
         var row = document.querySelector('.m4d-msg[data-id="' + id + '"]');
         if (row && row.classList.contains('m4d-msg--unread')) {
             row.classList.remove('m4d-msg--unread');
-            var dot = row.querySelector('.m4d-msg__unread-dot');
-            if (dot) dot.remove();
+            row.querySelectorAll('.m4d-msg__unread-dot, .m4d-msg__unread-label').forEach(function (n) { n.remove(); });
         }
     }
 
@@ -387,16 +387,18 @@
     }
 
     async function clearInbox() {
-        if (!window.confirm('Delete every message in the inbox? This cannot be undone.')) return;
+        // This empties the whole store, not just the mailbox on screen, so the prompt says so.
+        if (!window.confirm('Delete all messages in every mailbox? This cannot be undone.\n\n' +
+            'To delete one message, open it and use Delete.')) return;
         try {
             var result = await M.api('/messages', { method: 'DELETE' });
             state.selectedId = null;
             showDetailEmpty();
-            M.toast('Cleared ' + (result && result.cleared != null ? result.cleared : 0) + ' message(s).');
+            M.toast('Deleted ' + (result && result.cleared != null ? result.cleared : 0) + ' message(s) from every mailbox.');
             state.page = 1;
             loadList();
         } catch (e) {
-            M.toast('Could not clear the inbox.', 'error');
+            M.toast('Could not delete the messages.', 'error');
         }
     }
 
