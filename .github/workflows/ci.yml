@@ -25,6 +25,9 @@ jobs:
           global-json-file: global.json
           dotnet-version: 10.0.x
 
+      - name: Check the package README
+        run: .github/scripts/check-package-readme.sh README.md
+
       - name: Restore
         run: dotnet restore Hermex.slnx
 
