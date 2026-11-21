@@ -5,6 +5,7 @@ using System.Net.Http.Json;
 using System.Net.Sockets;
 using System.Text;
 using Hermex.Diagnostics;
+using Hermex.Internal;
 using Hermex.Smtp;
 using Hermex.Storage;
 using Microsoft.Extensions.DependencyInjection;
@@ -31,13 +32,13 @@ public sealed class FaultInjectionTests
     [InlineData("exact@x.test", "exact@x.test", true)]
     [InlineData("exact@x.test", "exact@x.tes", false)]
     public void Glob_matches(string pattern, string text, bool expected) =>
-        Assert.Equal(expected, FaultInjector.Glob(pattern, text));
+        Assert.Equal(expected, AddressPattern.IsMatch(pattern, text));
 
     [Fact]
     public void Glob_is_fast_on_hostile_patterns()
     {
         var watch = Stopwatch.StartNew();
-        Assert.False(FaultInjector.Glob(string.Concat(Enumerable.Repeat("*a", 150)) + "b", new string('a', 4000)));
+        Assert.False(AddressPattern.IsMatch(string.Concat(Enumerable.Repeat("*a", 150)) + "b", new string('a', 4000)));
         Assert.True(watch.Elapsed < TimeSpan.FromSeconds(1), $"took {watch.Elapsed}");
     }
 

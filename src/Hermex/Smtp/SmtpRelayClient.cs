@@ -138,7 +138,7 @@ internal static class SmtpRelayClient
             var (code, lines) = await ReadReplyAsync(ct).ConfigureAwait(false);
             if (code != expectedCode)
             {
-                throw new HermexException(
+                throw new SmtpReplyException(code, expectedCode,
                     $"Upstream SMTP server replied {code} (expected {expectedCode}): {string.Join(' ', lines)}");
             }
         }
@@ -224,4 +224,11 @@ internal static class SmtpRelayClient
             await _stream.FlushAsync(ct).ConfigureAwait(false);
         }
     }
+}
+
+/// <summary>An unexpected upstream reply. The message quotes the reply text, which can contain addresses: log the codes.</summary>
+internal sealed class SmtpReplyException(int replyCode, int expectedCode, string message) : HermexException(message)
+{
+    public int ReplyCode { get; } = replyCode;
+    public int ExpectedCode { get; } = expectedCode;
 }

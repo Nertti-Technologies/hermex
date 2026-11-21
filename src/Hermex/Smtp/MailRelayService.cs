@@ -8,7 +8,7 @@ namespace Hermex.Smtp;
 public sealed record MailRelayResult(bool Success, string? Error)
 {
     /// <summary>
-    /// <c>true</c> when the relay was refused by policy (the relay host allow-list or an
+    /// <c>true</c> when the relay was refused by policy (the relay host allow-list, the recipient rules or an
     /// <see cref="HermexEvents.OnRelaying"/> hook) rather than failing.
     /// </summary>
     public bool Rejected { get; init; }
@@ -71,9 +71,31 @@ internal sealed class MailRelayService : IMailRelayService
         if (raw is null)
             return MailRelayResult.Fail($"The raw content of message #{messageId} was not found.");
 
-        var recipients = SplitRecipients(detail.EnvelopeTo);
-        if (recipients.Count == 0)
+        var envelope = SplitRecipients(detail.EnvelopeTo);
+        if (envelope.Count == 0)
             return MailRelayResult.Fail("The message has no envelope recipients to relay to.");
+
+        // A sender the filter cannot vouch for is refused (empty is the null sender, <>).
+        var from = detail.EnvelopeFrom.Trim();
+        if (from.Length > 0)
+        {
+            if (HermexRelayOptions.NormalizeAddress(from) is not { } normalizedFrom)
+            {
+                _eventLog.Warning("Relay", $"Message #{messageId} was not relayed: the sender is not a plain address.");
+                return MailRelayResult.Refused("The message's sender is not a plain address, so it is not relayed.");
+            }
+            from = normalizedFrom;
+        }
+
+        // Recipient rules (ADR-0003 D14) on every relay path, manual and automatic: host and dashboard layers.
+        var recipients = HermexRelayOptions.FilterRecipients(envelope, _options.Relay.RecipientRules());
+        if (recipients.Count == 0)
+        {
+            _eventLog.Warning("Relay", $"Message #{messageId} was not relayed: no recipient passes the relay recipient rules.");
+            return MailRelayResult.Refused("No recipient of this message passes the relay recipient rules.");
+        }
+        if (recipients.Count < envelope.Count)
+            _eventLog.Info("Relay", $"Message #{messageId}: {envelope.Count - recipients.Count} of {envelope.Count} recipient(s) left out by the relay recipient rules.");
 
         // One snapshot is checked, shown to the hook and used to connect, so a concurrent settings
         // change cannot redirect the message to a host that was never checked or approved.
@@ -92,8 +114,8 @@ internal sealed class MailRelayService : IMailRelayService
             MessageId = messageId,
             Host = target.Host,
             Port = target.Port,
-            From = detail.EnvelopeFrom,
-            Recipients = recipients,
+            From = from,
+            Recipients = recipients.ToArray(), // a copy: a hook cannot add recipients after the filter
             Automatic = automatic,
             HttpContext = _events.HttpContext,
             CancellationToken = cancellationToken,
@@ -106,14 +128,19 @@ internal sealed class MailRelayService : IMailRelayService
 
         try
         {
-            await SmtpRelayClient.SendAsync(target, detail.EnvelopeFrom, recipients, raw, cancellationToken)
+            await SmtpRelayClient.SendAsync(target, from, recipients, raw, cancellationToken)
                 .ConfigureAwait(false);
             _eventLog.Info("Relay", $"Message #{messageId} relayed to {target.Host}:{target.Port}.");
             return MailRelayResult.Ok();
         }
         catch (Exception ex)
         {
-            _eventLog.Error("Relay", $"Failed to relay message #{messageId}: {ex.Message}");
+            // An upstream reply can quote addresses (550 <user@x>: rejected), so the log keeps only its code; the
+            // caller still gets the full text.
+            var logged = ex is SmtpReplyException reply
+                ? $"the upstream server replied {reply.ReplyCode} (expected {reply.ExpectedCode})"
+                : ex is HermexException ? ex.Message : ex.GetType().Name;
+            _eventLog.Error("Relay", $"Failed to relay message #{messageId}: {logged}.");
             return MailRelayResult.Fail(ex.Message);
         }
     }

@@ -86,7 +86,7 @@ public sealed class HermexFaultRule
         sessionTimeout <= TimeSpan.Zero || sessionTimeout > MaxDelay ? MaxDelay : sessionTimeout; // infinite (-1 ms) → cap
 
     /// <summary>Longest <see cref="Match"/> pattern (estimate: RFC 5321's 256-octet path plus wildcards).</summary>
-    public const int MaxMatchLength = 320;
+    public const int MaxMatchLength = Internal.AddressPattern.MaxLength;
 
     /// <summary>The SMTP step this rule applies to.</summary>
     public HermexSmtpStage Stage { get; set; }

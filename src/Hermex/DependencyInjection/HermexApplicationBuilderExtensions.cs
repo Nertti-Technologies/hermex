@@ -48,6 +48,14 @@ public static class HermexApplicationBuilderExtensions
             logger.LogError(ex, "Hermex: persisted runtime settings could not be applied.");
         }
 
+        // ADR-0003 OD4: an empty recipient allow-list relays to anyone in 2.x; say so while relay is on.
+        if (options.Relay.Enabled && options.Relay.RecipientRules().AllowsAnyone)
+        {
+            logger.LogWarning("Hermex: relay is enabled with no HermexRelayOptions.AllowedRecipients, so captured mail " +
+                "can be relayed to any address. Set AllowedRecipients (for example *@your-test-domain); a future major " +
+                "version will relay to nobody when the list is empty.");
+        }
+
         if (!options.EnableDashboard)
         {
             logger.LogInformation("Hermex dashboard is disabled; the SMTP server still runs.");

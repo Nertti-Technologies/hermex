@@ -57,6 +57,12 @@ public class HermexEvents
     /// </summary>
     public Func<HermexFaultsChangingContext, Task> OnFaultsChanging { get; set; } = _ => Task.CompletedTask;
 
+    /// <summary>
+    /// Veto hook: before uploaded <c>.eml</c> files are imported (ADR-0003 D14). Use it to audit who imported
+    /// (<see cref="HermexVetoContext.HttpContext"/>) or to refuse the import.
+    /// </summary>
+    public Func<HermexImportingContext, Task> OnImporting { get; set; } = _ => Task.CompletedTask;
+
     /// <summary>Notification hook: after settings were applied.</summary>
     public Func<HermexSettingsChangedContext, Task> OnSettingsChanged { get; set; } = _ => Task.CompletedTask;
 
@@ -78,6 +84,9 @@ public class HermexEvents
 
     /// <summary>Invokes <see cref="OnWebhookSending"/>.</summary>
     public virtual Task WebhookSending(HermexWebhookSendingContext context) => OnWebhookSending(context);
+
+    /// <summary>Runs <see cref="OnImporting"/>; override in a subclass registered as a service.</summary>
+    public virtual Task Importing(HermexImportingContext context) => OnImporting(context);
 
     /// <summary>Runs <see cref="OnFaultsChanging"/>; override in a subclass registered as a service.</summary>
     public virtual Task FaultsChanging(HermexFaultsChangingContext context) => OnFaultsChanging(context);
@@ -110,6 +119,16 @@ public abstract class HermexVetoContext
         IsRejected = true;
         RejectionReason = string.IsNullOrWhiteSpace(reason) ? "Rejected by the host application." : reason;
     }
+}
+
+/// <summary>Context for <see cref="HermexEvents.OnImporting"/>: the upload about to be imported.</summary>
+public sealed class HermexImportingContext : HermexVetoContext
+{
+    /// <summary>Non-empty files that will be imported.</summary>
+    public required int FileCount { get; init; }
+
+    /// <summary>Their total size in bytes.</summary>
+    public required long TotalBytes { get; init; }
 }
 
 /// <summary>Context for <see cref="HermexEvents.OnFaultsChanging"/>: the switch and rules about to replace the current ones.</summary>

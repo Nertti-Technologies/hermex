@@ -183,11 +183,14 @@ internal sealed class MailPersistenceService : BackgroundService
             QueueStoredEvent(record, cancellationToken);
 
         // Automatic relay runs off the persistence path; RelayAsync logs its own failures.
+        // Imported files are never relayed automatically (ADR-0003 D14); records match the batch by index.
         if (_options.Relay is { Enabled: true, AutomaticRelay: true })
         {
-            foreach (var record in records)
+            for (var i = 0; i < records.Count; i++)
             {
-                var id = record.Id;
+                if (batch[i].Imported)
+                    continue;
+                var id = records[i].Id;
                 _ = _relay.RelayAsync(id, automatic: true, CancellationToken.None);
             }
         }

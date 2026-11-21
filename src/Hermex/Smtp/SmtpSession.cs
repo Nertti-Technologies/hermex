@@ -16,7 +16,8 @@ internal sealed class SmtpSession
 {
     private const int MaxCommandLength = 4096;
     private const int MaxDataLineLength = 1024 * 1024;
-    private const int MaxRecipients = 200;
+    /// <summary>RCPT TO per message; .eml import takes at most as many recipients from headers (EmlImport).</summary>
+    internal const int MaxRecipients = 200;
     private const int TranscriptLineCap = 400;
 
     private static readonly byte[] Crlf = { (byte)'\r', (byte)'\n' };

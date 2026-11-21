@@ -747,8 +747,69 @@
     }
 
     /* ---------- wiring ---------- */
+    /* ---------- .eml import (ADR-0003 D14) ---------- */
+    var IMPORT_MAX_FILES = 50; // EmlImport.MaxFiles on the server
+
+    async function importFiles(fileList) {
+        var files = Array.prototype.slice.call(fileList || []);
+        if (!files.length) return;
+        if (files.length > IMPORT_MAX_FILES) {
+            M.toast('Import at most ' + IMPORT_MAX_FILES + ' files at a time.', 'error');
+            return;
+        }
+        var form = new FormData();
+        files.forEach(function (f) { form.append('files', f, f.name); });
+        try {
+            var r = await M.api('/messages/import', { method: 'POST', body: form });
+            M.toast('Imported ' + r.imported + ' message' + (r.imported === 1 ? '' : 's') +
+                (r.skipped ? ' (' + r.skipped + ' empty file' + (r.skipped === 1 ? '' : 's') + ' skipped)' : '') + '.', 'success');
+            // The list refreshes from the messageReceived hub event (or the polling fallback) once they are stored.
+        } catch (e) {
+            // M.api errors read "Request failed (NNN) <body>"; the body carries error and, on 503, imported.
+            var status = /\((\d{3})\)/.exec(e.message);
+            var body = {};
+            try { body = JSON.parse(e.message.slice(e.message.indexOf('{'))); } catch (x) { /* not JSON */ }
+            var text = status && status[1] === '403' && !body.error ? 'You do not have permission to import messages.'
+                : body.error || 'Import failed.';
+            if (body.imported) {
+                text = body.imported + ' message' + (body.imported === 1 ? ' was' : 's were') + ' imported before this: ' + text;
+            }
+            M.toast(text, 'error');
+        }
+    }
+
+    function wireImport() {
+        var button = document.getElementById('m4d-import');
+        var input = document.getElementById('m4d-import-file');
+        if (!button || !input) return;
+        button.addEventListener('click', function () { input.click(); });
+        input.addEventListener('change', function () { importFiles(input.files); input.value = ''; });
+
+        var target = el.list.parentElement;
+        var depth = 0;
+        function hasFiles(e) { return e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types, 'Files') >= 0; }
+        target.addEventListener('dragenter', function (e) {
+            if (!hasFiles(e)) return;
+            e.preventDefault();
+            depth++;
+            target.classList.add('m4d-dropping');
+        });
+        target.addEventListener('dragover', function (e) { if (hasFiles(e)) e.preventDefault(); });
+        target.addEventListener('dragleave', function () {
+            if (--depth <= 0) { depth = 0; target.classList.remove('m4d-dropping'); }
+        });
+        target.addEventListener('drop', function (e) {
+            if (!hasFiles(e)) return;
+            e.preventDefault();
+            depth = 0;
+            target.classList.remove('m4d-dropping');
+            importFiles(e.dataTransfer.files);
+        });
+    }
+
     M.ready(function () {
         cache();
+        wireImport();
 
         var debouncedSearch = M.debounce(function () {
             state.search = el.search.value.trim();

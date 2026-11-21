@@ -19,6 +19,9 @@
     function readVal(id) { var n = document.getElementById(id); return n ? n.value : ''; }
     function readInt(id) { return parseInt(readVal(id), 10) || 0; }
     function readNum(id) { return parseFloat(readVal(id)) || 0; }
+    function readLines(id) {
+        return readVal(id).split(/\r?\n/).map(function (l) { return l.trim(); }).filter(function (l) { return l; });
+    }
     function readBool(id) { var n = document.getElementById(id); return n ? n.checked : false; }
 
     function formatUptime(seconds) {
@@ -95,6 +98,8 @@
             check('set-relayAutomatic', s.relayAutomatic);
             val('set-relayHost', s.relayHost);
             val('set-relayPort', s.relayPort);
+            val('set-relayAllowedRecipients', (s.relayAllowedRecipients || []).join('\n'));
+            val('set-relayBlockedRecipients', (s.relayBlockedRecipients || []).join('\n'));
         } catch (e) {
             M.toast('Could not load settings.', 'error');
         }
@@ -116,7 +121,9 @@
             relayEnabled: readBool('set-relayEnabled'),
             relayAutomatic: readBool('set-relayAutomatic'),
             relayHost: readVal('set-relayHost').trim(),
-            relayPort: readInt('set-relayPort')
+            relayPort: readInt('set-relayPort'),
+            relayAllowedRecipients: readLines('set-relayAllowedRecipients'),
+            relayBlockedRecipients: readLines('set-relayBlockedRecipients')
         };
     }
 

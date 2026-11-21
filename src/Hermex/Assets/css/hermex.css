@@ -861,6 +861,10 @@ a:hover { text-decoration: underline; }
     font-weight: 700;
 }
 .m4d-level--debug   { background: var(--surface-3); color: var(--text-muted); }
+/* .eml import drop target and relay recipient lists (ADR-0003 D14) */
+.m4d-dropping { outline: 2px dashed var(--accent); outline-offset: -6px; background: var(--accent-soft); }
+.m4d-textarea { resize: vertical; min-height: 72px; font-family: var(--font-mono, ui-monospace, monospace); font-size: 12.5px; }
+
 /* SMTP faults on the Settings page (ADR-0003 D11) */
 .m4d-faults__scroll { overflow-x: auto; margin: 4px 0 8px; }
 .m4d-faults__table { min-width: 720px; }

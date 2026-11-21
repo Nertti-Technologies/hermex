@@ -3,6 +3,9 @@
 @{
     ViewData["Title"] = "Settings";
     var editable = HermexOptions.AllowRuntimeSettings;
+    // The host's fixed relay limits (ADR-0003 A8): shown read-only; the textareas can only narrow them.
+    var hostAllowed = string.Join(", ", HermexOptions.Relay.AllowedRecipients);
+    var hostBlocked = string.Join(", ", HermexOptions.Relay.BlockedRecipients);
     var confirmWord = Hermex.Dashboard.HermexApiEndpoints.ResetRequest.ConfirmationText;
 }
 
@@ -137,6 +140,21 @@
             <div class="m4d-field">
                 <label for="set-relayPort">Relay port</label>
                 <input class="m4d-input" type="number" id="set-relayPort" min="1" max="65535" />
+            </div>
+
+            <div class="m4d-field">
+                <label for="set-relayAllowedRecipients">Relay only to</label>
+                <textarea class="m4d-input m4d-textarea" id="set-relayAllowedRecipients" rows="3" spellcheck="false"
+                          placeholder="*@@example.test&#10;qa+*@@corp.test"></textarea>
+                <span class="m4d-field__hint">One pattern per line; * and ? are wildcards. Narrows the host's list; empty adds no limit.</span>
+                <span class="m4d-field__hint">Host limit (set in code): @(hostAllowed.Length > 0 ? hostAllowed : "none, any recipient")</span>
+            </div>
+            <div class="m4d-field">
+                <label for="set-relayBlockedRecipients">Never relay to</label>
+                <textarea class="m4d-input m4d-textarea" id="set-relayBlockedRecipients" rows="3" spellcheck="false"
+                          placeholder="*@@customer-domain.com"></textarea>
+                <span class="m4d-field__hint">Blocked beats allowed. Applies to manual and automatic relay.</span>
+                <span class="m4d-field__hint">Always blocked by the host: @(hostBlocked.Length > 0 ? hostBlocked : "none")</span>
             </div>
 
             <div class="m4d-field m4d-field--wide">

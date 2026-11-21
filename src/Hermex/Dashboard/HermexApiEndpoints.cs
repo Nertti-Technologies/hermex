@@ -1,3 +1,4 @@
+using Hermex.Diagnostics;
 using Hermex.Background;
 using Microsoft.Data.Sqlite;
 using System.Globalization;
@@ -235,6 +236,16 @@ internal static class HermexApiEndpoints
             await notifier.StatsChangedAsync(await store.GetStatsAsync());
             return Results.Ok(new { id });
         }).WithHermexTier(Manager, authorization);
+
+        // .eml import (ADR-0003 D14): through the SMTP write queue; never relayed automatically. The request
+        // header is required even without authorization (with it, the api group already requires it): a
+        // cross-site page can post a multipart form without a preflight, and this route stores what it is given.
+        var import = api.MapPost("/messages/import", (HttpRequest request, IReceivedMailSink sink, HermexOptions options,
+            HermexEventDispatcher events, IHermexEventLog eventLog, CancellationToken ct) =>
+                EmlImport.HandleAsync(request, sink, options, events, eventLog, ct))
+            .WithHermexTier(Manager, authorization);
+        if (!authorization.IsEnabled)
+            import.AddEndpointFilter(HermexEndpointAuthorization.RequireRequestHeader);
 
         // ---- bulk delete / mark read --------------------------------------
         // Separate routes so each carries one tier. An empty or oversized id list is a 400, never "all".

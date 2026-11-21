@@ -51,6 +51,21 @@ public sealed class HermexSettings
     /// <summary>The upstream relay port.</summary>
     public int RelayPort { get; set; } = 25;
 
-    /// <summary>Returns an independent copy (every member is a value type or an immutable string).</summary>
-    internal HermexSettings Clone() => (HermexSettings)MemberwiseClone();
+    /// <summary>
+    /// The dashboard's relay allow-list. It narrows <see cref="HermexRelayOptions.AllowedRecipients"/> and never widens
+    /// it: a recipient must pass both. Empty adds no restriction.
+    /// </summary>
+    public IList<string> RelayAllowedRecipients { get; set; } = new List<string>();
+
+    /// <summary>The dashboard's relay block-list, added to <see cref="HermexRelayOptions.BlockedRecipients"/>.</summary>
+    public IList<string> RelayBlockedRecipients { get; set; } = new List<string>();
+
+    /// <summary>Returns an independent copy (lists are copied; every other member is a value type or an immutable string).</summary>
+    internal HermexSettings Clone()
+    {
+        var copy = (HermexSettings)MemberwiseClone();
+        copy.RelayAllowedRecipients = RelayAllowedRecipients?.ToList() ?? [];
+        copy.RelayBlockedRecipients = RelayBlockedRecipients?.ToList() ?? [];
+        return copy;
+    }
 }

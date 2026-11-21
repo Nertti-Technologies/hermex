@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using Hermex.Diagnostics;
+using Hermex.Internal;
 using Microsoft.Extensions.Hosting;
 
 namespace Hermex.Smtp;
@@ -125,7 +126,7 @@ internal sealed class FaultInjector
         for (var i = 0; i < s.Rules.Length; i++)
         {
             var rule = s.Rules[i];
-            if (rule.Stage != stage || (rule.Match is not null && !Glob(rule.Match, address ?? string.Empty)))
+            if (rule.Stage != stage || (rule.Match is not null && !AddressPattern.IsMatch(rule.Match, address ?? string.Empty)))
                 continue;
             if (!Fires(rule, s.Counters, i))
                 continue;
@@ -234,41 +235,6 @@ internal sealed class FaultInjector
             return false;
         duration = TimeSpan.FromMilliseconds((long)n * unit);
         return true;
-    }
-
-    /// <summary>
-    /// Case-insensitive glob: <c>*</c> any run, <c>?</c> one character. Two pointers with star backtracking, no
-    /// recursion: worst case pattern × text comparisons (320 × 4,096 ≈ 1.3 M per rule, at the Match and SMTP command
-    /// limits), never exponential.
-    /// </summary>
-    internal static bool Glob(string pattern, string text)
-    {
-        int p = 0, t = 0, star = -1, mark = 0;
-        while (t < text.Length)
-        {
-            if (p < pattern.Length && pattern[p] == '*') // a wildcard first, even when the text has a literal '*'
-            {
-                star = p++;
-                mark = t;
-            }
-            else if (p < pattern.Length && (pattern[p] == '?' || char.ToUpperInvariant(pattern[p]) == char.ToUpperInvariant(text[t])))
-            {
-                p++;
-                t++;
-            }
-            else if (star >= 0)
-            {
-                p = star + 1;
-                t = ++mark;
-            }
-            else
-            {
-                return false;
-            }
-        }
-        while (p < pattern.Length && pattern[p] == '*')
-            p++;
-        return p == pattern.Length;
     }
 
     private static HermexFaultRule Copy(HermexFaultRule r) => new()

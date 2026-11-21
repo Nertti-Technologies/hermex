@@ -76,6 +76,7 @@ public sealed class AuthorizationTierTests
         { "GET", "/hermex/api/logs", HermexEndpointTier.Admin },
         { "GET", "/hermex/api/webhooks/deliveries", HermexEndpointTier.Admin },
         { "GET", "/hermex/api/faults", HermexEndpointTier.Admin },
+        { "POST", "/hermex/api/messages/import", HermexEndpointTier.Manager },
         { "PUT", "/hermex/api/faults", HermexEndpointTier.Admin },
         { "POST", "/hermex/api/webhooks/0/resume", HermexEndpointTier.Admin },
         { "DELETE", "/hermex/api/logs", HermexEndpointTier.Admin },
