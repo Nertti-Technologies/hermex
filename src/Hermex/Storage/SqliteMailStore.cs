@@ -14,7 +14,7 @@ namespace Hermex.Storage;
 /// to avoid <c>SQLITE_BUSY</c>. Inbox list rows come from indexed metadata columns; full
 /// message detail is reconstructed by re-parsing the stored raw payload on demand.
 /// </summary>
-public sealed class SqliteMailStore : IMailStore, IDisposable
+public sealed class SqliteMailStore : IMailStore, IWaitQueryStore, IDisposable
 {
     private const int LogRetentionCap = 2000;
 
@@ -1026,6 +1026,7 @@ public sealed class SqliteMailStore : IMailStore, IDisposable
         var clauses = new List<string>();
 
         MessageSearch.AppendClauses(query.Search, clauses, parameters);
+        MessageSearch.AppendCriteria(query.Criteria, clauses, parameters);
 
         if (query.UnreadOnly)
             clauses.Add("IsRead = 0");

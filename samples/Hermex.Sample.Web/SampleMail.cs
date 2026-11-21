@@ -25,6 +25,15 @@ internal static class SampleMail
                 """);
     }
 
+    /// <summary>A message whose X-Hermex-Fault header asks Hermex to refuse it with 451.</summary>
+    public static MailMessage AsksForFault()
+    {
+        var message = new MailMessage("alerts@contoso-app.com", "developer@example.com", "This one fails",
+            "Hermex refuses this message because of its X-Hermex-Fault header.");
+        message.Headers.Add("X-Hermex-Fault", "451");
+        return message;
+    }
+
     public static MailMessage Html()
     {
         var message = new MailMessage

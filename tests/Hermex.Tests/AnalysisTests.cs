@@ -137,13 +137,36 @@ public sealed class AnalysisTests
     public void Base_and_refresh_are_stripped_for_the_preview()
     {
         var html = "<head><BASE href=\"https://evil.test/\"><meta http-equiv='Refresh' content='0;url=x'><meta charset=utf-8></head>";
-        Assert.Equal("<head><meta charset=utf-8></head>", HtmlChecks.StripBaseAndRefresh(html));
-        Assert.Equal("x", HtmlChecks.StripBaseAndRefresh("<ba<base>se href=\"https://evil.test/\">x"));
-        Assert.Equal("x", HtmlChecks.StripBaseAndRefresh("<base/href=\"https://evil.test/\">x"));
-        Assert.Equal("x", HtmlChecks.StripBaseAndRefresh("<meta/http-equiv=\"refresh\"/content=\"0;url=https://evil.test\">x"));
-        Assert.Equal("x", HtmlChecks.StripBaseAndRefresh("<meta content=\">\" http-equiv=refresh content=\"0;url=y\">x"));
-        Assert.Equal("x", HtmlChecks.StripBaseAndRefresh("<meta http-equiv=\"&#x72;efresh\" content=\"0;url=y\">x"));
+        const string Z = "\u200B"; // what a removed tag becomes
+        Assert.Equal($"<head>{Z}{Z}<meta charset=utf-8></head>", HtmlChecks.StripBaseAndRefresh(html));
+        // Removal cannot splice a new <base> or refresh together: the marker stays inside the tag name.
+        Assert.Equal($"<ba{Z}se href=\"https://evil.test/\">x", HtmlChecks.StripBaseAndRefresh("<ba<base>se href=\"https://evil.test/\">x"));
+        Assert.Equal($"<base{Z} href=\"https://evil.test/\">x", HtmlChecks.StripBaseAndRefresh("<base<base> href=\"https://evil.test/\">x"));
+        Assert.Equal($"<meta{Z} http-equiv=refresh content=0>x", HtmlChecks.StripBaseAndRefresh("<meta<base> http-equiv=refresh content=0>x"));
+        Assert.Equal(Z + "x", HtmlChecks.StripBaseAndRefresh("<base/href=\"https://evil.test/\">x"));
+        Assert.Equal(Z + "x", HtmlChecks.StripBaseAndRefresh("<meta/http-equiv=\"refresh\"/content=\"0;url=https://evil.test\">x"));
+        Assert.Equal(Z + "x", HtmlChecks.StripBaseAndRefresh("<meta content=\">\" http-equiv=refresh content=\"0;url=y\">x"));
+        Assert.Equal(Z + "x", HtmlChecks.StripBaseAndRefresh("<meta http-equiv=\"&#x72;efresh\" content=\"0;url=y\">x"));
+        // Unpaired quotes: the Tag pattern skips these, a browser does not.
+        Assert.Equal(Z + "x", HtmlChecks.StripBaseAndRefresh("<base x=a'b href=https://evil.test/>x"));
+        Assert.Equal(Z + "x", HtmlChecks.StripBaseAndRefresh("<meta http-equiv=refresh content=0;url=https://evil.test a\"b>x"));
+        Assert.Equal("<meta name=description content=\"Refresh your plan\">", HtmlChecks.StripBaseAndRefresh("<meta name=description content=\"Refresh your plan\">"));
+        Assert.Equal(Z + "x", HtmlChecks.StripBaseAndRefresh("<meta content=\"0;url=x>y\" x=a'b http-equiv=refresh>x"));
+        Assert.Equal(Z + "x", HtmlChecks.StripBaseAndRefresh("<meta x=\"a>b\" y=c'd http-equiv=refresh content=0>x"));
+        // Text inside a kept tag's attribute is left alone.
+        Assert.Equal("<img alt=\"<base \" src=\"x.png\"><p>after</p>", HtmlChecks.StripBaseAndRefresh("<img alt=\"<base \" src=\"x.png\"><p>after</p>"));
+        Assert.Equal("<basefont size=3>", HtmlChecks.StripBaseAndRefresh("<basefont size=3>"));
+        // A quote outside a value does not open one (WHATWG), so a real <base> after it is still found.
+        Assert.Equal("<p a\">" + Z + "\">x", HtmlChecks.StripBaseAndRefresh("<p a\"><base href=//evil.test/>\">x"));
+        Assert.Equal("<p b=c\">" + Z + "\">", HtmlChecks.StripBaseAndRefresh("<p b=c\"><base href=//evil.test/>\">"));
+        Assert.Equal("<p a'>" + Z + "'>", HtmlChecks.StripBaseAndRefresh("<p a'><meta http-equiv=refresh content=\"0;url=//evil.test\">'>"));
         Assert.Equal("<meta name=\"viewport\" content=\"a>b\">", HtmlChecks.StripBaseAndRefresh("<meta name=\"viewport\" content=\"a>b\">"));
+
+        // Nested splices cost one pass, not one per level (was quadratic).
+        var nested = string.Concat(Enumerable.Repeat("<ba", 100_000)) + "<base>" + string.Concat(Enumerable.Repeat("se>", 100_000));
+        var watch = Stopwatch.StartNew();
+        Assert.DoesNotContain("<base", HtmlChecks.StripBaseAndRefresh(nested), StringComparison.OrdinalIgnoreCase);
+        Assert.True(watch.Elapsed < TimeSpan.FromSeconds(10), $"took {watch.Elapsed}");
     }
 
     // ------------------------------------------------------------ authentication headers

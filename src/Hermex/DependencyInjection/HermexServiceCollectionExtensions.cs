@@ -65,12 +65,18 @@ public static class HermexServiceCollectionExtensions
         services.AddSingleton<FaultInjector>();
         services.AddSingleton<SmtpServerService>();
         services.AddSingleton<ImapServerService>();
-        services.AddSingleton<IHostedService>(sp => sp.GetRequiredService<SmtpServerService>());
-        services.AddSingleton<IHostedService>(sp => sp.GetRequiredService<ImapServerService>());
-        services.AddHostedService<MailPersistenceService>();
-        services.AddHostedService<RetentionService>();
+        // Order matters (with the default HostOptions.ServicesStopConcurrently = false): hosted services stop
+        // in reverse order of registration. The listeners are registered last so they stop accepting
+        // connections before MailPersistenceService's shutdown flush (MailPersistenceService.DrainMessagesAsync;
+        // also noted in SmtpServerService). A session already past DATA is not awaited and can still submit
+        // after the flush (open Low). WebhookService stops last and may send some notices the flush queues;
+        // whatever is still queued when it stops is dropped (in-memory delivery, ADR-0003 D4).
         services.AddSingleton<WebhookService>();
         services.AddSingleton<IHostedService>(sp => sp.GetRequiredService<WebhookService>());
+        services.AddHostedService<MailPersistenceService>();
+        services.AddHostedService<RetentionService>();
+        services.AddSingleton<IHostedService>(sp => sp.GetRequiredService<SmtpServerService>());
+        services.AddSingleton<IHostedService>(sp => sp.GetRequiredService<ImapServerService>());
 
         // Runtime-editable settings, also exposed to host code.
         services.AddSingleton<HermexSettingsService>();

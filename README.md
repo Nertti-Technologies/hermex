@@ -52,6 +52,14 @@ container. Hermex runs **inside your application** as a set of background servic
 - **TLS** — `STARTTLS` and implicit TLS, with a supplied or auto-generated certificate.
 - **Per-message SMTP transcript**, **MIME structure tree**, **upstream relay**, **diagnostic
   logs**, **port-conflict auto-resolution** and **retention by count and age**.
+- **Mailbox management** — delete one mailbox, reset everything, delete or mark rows one at a time
+  or in bulk, and import `.eml` files by dropping them on the inbox.
+- **Search operators** — `from:`, `to:`, `cc:`, `subject:`, `mailbox:`, `is:read`, `has:attachment`,
+  `larger:`, `before:` and more, with `"quoted phrases"` and `-` to exclude.
+- **HTML checks and previews** — common email pitfalls flagged per message, phone/tablet/desktop
+  and dark previews, and the authentication results (SPF, DKIM, DMARC) the message carries.
+- **Testing support** — a wait-for-message API and the `Hermex.Testing` package.
+- **Signed webhooks**, **SMTP fault injection** and **relay recipient rules**.
 
 ## Installation
 
@@ -107,7 +115,10 @@ All configuration is done through the `AddHermex` callback.
 | `Relay` | _disabled_ | Upstream relay settings. `Relay.AllowedHosts` limits which hosts relay may connect to (empty = any). |
 | `AllowRuntimeSettings` | `true` | Let the Settings page change settings and re-apply saved settings at startup. `false` makes your code options final. |
 | `Authorization` | _no policies_ | Viewer / Manager / Admin policies for the dashboard, API and hub. |
-| `Events` | _no-ops_ | Hooks to veto or audit settings changes, relay and deletes, and to observe stored mail. |
+| `Events` | _no-ops_ | Hooks to veto or audit settings changes, relay, deletes, imports and fault changes, and to observe stored mail. |
+| `Relay.AllowedRecipients` / `Relay.BlockedRecipients` | _empty_ | Recipient patterns relay may / may never send to. See [Relay recipient rules](#relay-recipient-rules). |
+| `Webhooks` | _no endpoints_ | Signed notices to your URLs when mail is captured. See [Webhooks](#webhooks). |
+| `Faults` | _disabled_ | SMTP fault injection for testing failure handling. See [Fault injection](#fault-injection). |
 
 Most of these are also editable at runtime from the dashboard's **Settings** page — including
 the SMTP and IMAP ports, which re-bind their listener live. Host code can do the same through
@@ -160,7 +171,8 @@ app.UseHermex();
 - **Startup checks.** `UseHermex()` throws `HermexConfigurationException` if a policy name is not
   registered or there is no authentication scheme to challenge with.
 - **Scripting the API.** Once a policy is set, POST/PUT/DELETE calls to `/hermex/api` must send the
-  header `X-Hermex-Request: 1` (the dashboard does). This stops other sites from triggering them
+  header `X-Hermex-Request: 1` (the dashboard does). Relay, mark-read, import and webhook resume need it
+  even without a policy. This stops other sites from triggering them
   with a signed-in user's cookie.
 - **Live-update hub.** Once a policy is set, the hub at `/hermex/hub` refuses browser requests whose
   `Origin` is another site, so another page cannot open it with a signed-in user's credentials. Pages
@@ -168,7 +180,8 @@ app.UseHermex();
   in `o.Authorization.AllowedHubOrigins`.
 - **Status.** `GET /hermex/api/status` returns the database path and last error only to callers
   who pass the Admin tier.
-- **Hooks.** Veto hooks (`OnSettingsChanging`, `OnRelaying`, `OnDeleting`) run before the action,
+- **Hooks.** Veto hooks (`OnSettingsChanging`, `OnRelaying`, `OnDeleting`, `OnImporting`,
+  `OnFaultsChanging`, `OnWebhookSending`) run before the action,
   including automatic relay and startup; an exception counts as a rejection. Notification hooks
   (`OnSettingsChanged`, `OnMessageStored`) run after it and never break capture. `OnMessageStored`
   is delivered from a bounded background queue; if your hook falls far behind, events are dropped
@@ -176,6 +189,82 @@ app.UseHermex();
   methods and register it with `services.AddSingleton<HermexEvents, MyEvents>()`.
   Don't inject `IHermexSettings` into that subclass's constructor (it depends on the events),
   and don't call `UpdateAsync` from a settings hook; change `ctx.Proposed` instead.
+
+## Testing with Hermex
+
+`GET /hermex/api/messages/wait` holds the request until a matching message is stored (or the
+timeout passes, then `204`). The `Hermex.Testing` package wraps it for any test framework:
+
+```csharp
+var hermex = new HermexClient(app.CreateClient());   // e.g. from WebApplicationFactory
+var mark = await hermex.MarkAsync();                 // ignore mail sent before this point
+await SignUpAsync("ann@example.test");               // your code sends the email
+var message = await hermex.WaitForMessageAsync(
+    new HermexMessageCriteria { To = "ann@example.test", Subject = "Confirm", After = mark },
+    timeout: TimeSpan.FromSeconds(10));
+var links = await hermex.GetLinksAsync(message.Id);
+```
+
+See the [Hermex.Testing README](src/Hermex.Testing/README.md) for the full API.
+
+## Webhooks
+
+Hermex can POST a signed JSON notice to your URLs whenever a message is captured:
+
+```csharp
+o.Webhooks.Endpoints.Add(new HermexWebhookEndpoint
+{
+    Url = new Uri("https://ci.example.com/hooks/mail"),
+    Secret = builder.Configuration["Hermex:WebhookSecret"]!,   // "whsec_" + base64 of 24–64 random bytes
+});
+```
+
+- **Payload.** `type` is `message.received`; `data` holds the id, time, sender, recipients, subject,
+  size and an API path. Metadata only: never bodies or attachments. Long lists are capped and
+  marked `truncated`.
+- **Signing.** [Standard Webhooks](https://www.standardwebhooks.com/): `webhook-id`, `webhook-timestamp`
+  and `webhook-signature` (HMAC-SHA256) headers, so its receiver libraries verify Hermex notices.
+  `PreviousSecret` signs with a second key while you rotate.
+- **Delivery.** At-least-once, in memory, retried at 5 s, 30 s, 2 min and 10 min. A `410 Gone`
+  disables the endpoint; 20 failures in a row pause it until resumed on the **Logs** page.
+- **Network policy.** Cloud-metadata and link-local addresses are always refused, and redirects are
+  not followed. Loopback and private networks are allowed only in Development unless you set
+  `NetworkPolicy = AllowPrivate`.
+- Endpoints are set in code or configuration only; the dashboard shows the delivery log.
+
+## Fault injection
+
+To test how your app handles a failing mail server, Hermex can reject commands, slow replies or
+drop the connection at any SMTP step:
+
+```csharp
+o.Faults.Enabled = true;
+o.Faults.Rules.Add(new HermexFaultRule { Stage = HermexSmtpStage.RcptTo, Match = "*@bounce.test", ReplyCode = 550 });
+o.Faults.Rules.Add(new HermexFaultRule { Stage = HermexSmtpStage.Data, ReplyCode = 451, EveryNth = 3 });
+```
+
+- A message can also ask for its own fault with an `X-Hermex-Fault: 451`, `drop` or `delay=5s` header.
+- Faults work only in the Development environment; set `AllowOutsideDevelopment` to allow them
+  elsewhere. On a shared server, one rule fails everyone's mail.
+- Admins can change the rules on the **Settings** page (kept in memory only, vetoable with
+  `OnFaultsChanging`). Every injected fault is written to the diagnostic log.
+
+## Relay recipient rules
+
+Keep captured mail away from real people when relay is on:
+
+```csharp
+o.Relay.AllowedRecipients.Add("*@example.com");   // * any characters, ? one character, ignoring case
+o.Relay.BlockedRecipients.Add("ceo@example.com"); // blocked beats allowed
+```
+
+- The rules apply to manual and automatic relay. Recipients that don't match are left out; a message
+  with none left is not relayed.
+- The lists in code are a fixed limit. The **Settings** page has its own lists, which can only narrow
+  them further.
+- Only plain `name@domain` addresses are relayed; routing forms such as `a%b@c` are refused.
+- With no allow-list, relay goes to anyone, as in 2.2, and Hermex logs a warning. A future major
+  version will relay to nobody without one.
 
 ## Browsing captured mail over IMAP
 
@@ -242,6 +331,39 @@ The library multi-targets **net10.0** and **net11.0**, so it requires .NET 10 or
 The build runs the recommended .NET analyzers (`AnalysisLevel=latest-recommended`) and treats every
 warning as an error, including NuGet vulnerability advisories. Deliberate opt-outs are recorded,
 with their reason, in `.editorconfig`.
+
+## What's new in 2.3.0
+
+New features are off or additive by default. The behaviour changes are listed under **Changed**.
+
+- **Mailboxes:** delete one mailbox (Manager) or reset all captured mail (Admin, typed confirmation).
+  Both run through `OnDeleting`, which now says what is being deleted.
+- **Inbox:** per-row delete, multi-select and bulk delete / mark read; `.eml` import by drag and drop.
+- **Search operators:** `from:`, `to:`, `cc:`, `subject:`, `mailbox:`, `is:read`, `is:unread`,
+  `has:attachment`, `has:html`, `larger:`, `smaller:`, `before:`, `after:`.
+- **HTML checks**, responsive and dark previews, and an authentication-results view.
+- **Testing:** `GET /hermex/api/messages/wait` and the new `Hermex.Testing` package.
+- **Webhooks**, **fault injection** and **relay recipient rules**; see the sections above.
+- **New hooks:** `OnImporting`, `OnFaultsChanging` and `OnWebhookSending` (add headers to, or skip, a
+  webhook notice). `HermexDeletingContext` gains `Scope`, `MessageIds` and `MailboxAddress`.
+- **Changed — search:** plain words are now matched separately (all must match), `-word` excludes,
+  and `word:word` is read as an operator. Quote a phrase (`"John Smith"`) for the old exact-phrase
+  match. Queries longer than 512 characters return `400`.
+- **Changed — relay:** only plain `name@domain` addresses are relayed, even with no recipient rules.
+  Recipients in other forms (quoted, routed with `%` or `!`, with spaces) are left out, and a message
+  whose sender is in such a form is not relayed.
+- **Changed — HTML preview:** `<base>` and `<meta http-equiv="refresh">` are removed from the
+  preview, as email clients do.
+- **Check your `OnDeleting` hook:** new delete paths (bulk delete, mailbox delete, reset) call it with
+  a `Scope`. A hook that protects particular messages by checking `MessageId` must also check
+  `MessageIds` (bulk) and refuse `Mailbox` and `Reset` scopes it cannot judge; `MessageId` is set
+  only for a single message.
+- **Changed — API scripts:** `POST /hermex/api/messages/{id}/relay`, `…/read`, `…/messages/import` and
+  `…/webhooks/{i}/resume` need the `X-Hermex-Request: 1` header even without authorization, so another
+  website cannot trigger them through your browser. The dashboard and `Hermex.Testing` send it.
+- **Custom mail stores:** a host-supplied `IMailStore` gets `501` from the new store operations it
+  does not implement, including the wait API.
+- **Upgrade:** the database gains a `CcDisplay` column, filled in for existing mail on first start.
 
 ## What's new in 2.2.1
 

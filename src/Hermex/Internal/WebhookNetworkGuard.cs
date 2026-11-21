@@ -71,7 +71,10 @@ internal static class WebhookNetworkGuard
             return ip.Equals(IPAddress.IPv6None) || ip.Equals(IPAddress.IPv6Any)
                 || ip.IsIPv6LinkLocal                          // fe80::/10
                 || ip.IsIPv6Multicast                          // ff00::/8
-                || (b[0] == 0x20 && b[1] == 0x01 && b[2] == 0 && b[3] == 0); // 2001::/32 Teredo hides its IPv4
+                || (b[0] == 0x20 && b[1] == 0x01 && b[2] == 0 && b[3] == 0) // 2001::/32 Teredo hides its IPv4
+                // 64:ff9b:1::/48 local-use NAT64 (RFC 8215) can carry any IPv4 address, metadata ones included,
+                // in an operator-chosen layout that cannot be unwrapped reliably, so it is always refused.
+                || (b[0] == 0x00 && b[1] == 0x64 && b[2] == 0xff && b[3] == 0x9b && b[4] == 0x00 && b[5] == 0x01);
         }
         return true; // other families are never used for HTTP
     }

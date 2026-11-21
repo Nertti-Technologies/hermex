@@ -205,16 +205,29 @@ public sealed class HermexWebhookSendingContext : HermexVetoContext
 public sealed class HermexDeletingContext : HermexVetoContext
 {
     /// <summary>
-    /// The message being deleted when <see cref="Scope"/> is <see cref="HermexDeleteScope.Message"/>;
+    /// The message being deleted when <see cref="Scope"/> is <see cref="HermexDeleteScope.Message"/>, and the one
+    /// selected message of a one-item <see cref="HermexDeleteScope.Messages"/> delete (for hooks written for 2.2);
     /// otherwise <c>null</c> (as for clearing every message in 2.1).
     /// </summary>
     public long? MessageId { get; init; }
 
     /// <summary>
-    /// What is being deleted. Added in 2.3.0. Hooks should switch on this rather than on
-    /// <see cref="MessageId"/>: a mailbox delete or a reset removes messages without listing them here.
+    /// What is being deleted. Added in 2.3.0. When not set it is inferred: <see cref="HermexDeleteScope.Mailbox"/>
+    /// with a <see cref="MailboxAddress"/>, <see cref="HermexDeleteScope.Messages"/> with <see cref="MessageIds"/>,
+    /// otherwise the 2.2 meaning of <see cref="MessageId"/> (<see cref="HermexDeleteScope.Message"/> with an id,
+    /// <see cref="HermexDeleteScope.All"/> without), so code written for 2.2 still compiles and means the same. Hooks should switch on this rather than on
+    /// <see cref="MessageId"/>: a bulk delete lists its messages in <see cref="MessageIds"/>, and a mailbox delete
+    /// or a reset removes messages without listing them.
     /// </summary>
-    public required HermexDeleteScope Scope { get; init; }
+    public HermexDeleteScope Scope
+    {
+        get => _scope ?? (MailboxAddress is not null ? HermexDeleteScope.Mailbox
+            : MessageIds.Count > 0 ? HermexDeleteScope.Messages
+            : MessageId is null ? HermexDeleteScope.All : HermexDeleteScope.Message);
+        init => _scope = value;
+    }
+
+    private readonly HermexDeleteScope? _scope;
 
     /// <summary>The messages being deleted when <see cref="Scope"/> is <see cref="HermexDeleteScope.Messages"/>.</summary>
     public IReadOnlyList<long> MessageIds { get; init; } = Array.Empty<long>();

@@ -9,6 +9,11 @@ namespace Hermex.Smtp;
 /// <summary>
 /// Hosts the in-process SMTP listener. Runs entirely on background threads, never crashes the
 /// host on a port conflict, and can re-bind at runtime when the SMTP port is changed.
+/// <para>
+/// Registered after MailPersistenceService so it stops first and accepts no new connections after that service's
+/// shutdown flush (HermexServiceCollectionExtensions). A session already past DATA is not awaited and can still
+/// submit after the flush.
+/// </para>
 /// </summary>
 internal sealed class SmtpServerService : RestartableListenerService
 {

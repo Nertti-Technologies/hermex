@@ -28,6 +28,10 @@ builder.Services.AddHermex(options =>
         Url = new Uri(self + "/webhook-demo"),
         Secret = "whsec_" + Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)),
     });
+
+    // Fault injection, Development only. With no rules mail is captured as usual, unless a message asks
+    // for a fault with an X-Hermex-Fault header ("Send email that fails"). Add rules on the Settings page.
+    options.Faults.Enabled = builder.Environment.IsDevelopment();
 });
 
 var app = builder.Build();
@@ -50,6 +54,8 @@ app.MapPost("/api/send/{kind}", async (string kind, int? count, HermexRuntimeSta
     var port = state.ListeningPort ?? 2525;
     try
     {
+        if (kind == "fault")
+            return Results.Ok(new { sent = 0, port, note = await SendFaultAsync(port) });
         var sent = kind switch
         {
             "text" => await SendOneAsync(port, SampleMail.PlainText()),
@@ -81,6 +87,23 @@ static async Task<int> SendOneAsync(int port, MailMessage message)
         await client.SendMailAsync(message);
     }
     return 1;
+}
+
+// Asks Hermex to refuse this message with 451, as a failing mail server would, and describes what the
+// app saw. A refused message is not captured.
+static async Task<string> SendFaultAsync(int port)
+{
+    try
+    {
+        await SendOneAsync(port, SampleMail.AsksForFault());
+        return "The server accepted the message: fault injection is on in the Development environment only.";
+    }
+    catch (SmtpException ex) when (ex.StatusCode == SmtpStatusCode.LocalErrorInProcessing
+                                   && ex.Message.Contains("injected fault", StringComparison.Ordinal))
+    {
+        return $"The server refused the message with {(int)ex.StatusCode}, as its X-Hermex-Fault header asked. " +
+               "This is how your app sees a failing mail server; the fault is in the dashboard's Logs.";
+    }
 }
 
 static async Task<int> SendManyAsync(int port, int count)

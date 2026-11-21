@@ -187,6 +187,22 @@ public sealed class MessageQuery
 
     /// <summary>Skips the total count (TotalCount is then 0); for callers that only read the first item.</summary>
     internal bool SkipCount { get; set; }
+
+    /// <summary>
+    /// Field "contains" criteria from the wait API (operator, value), matched like the search operators but
+    /// without going through search text, so a value may hold quotes. Only the built-in store reads it
+    /// (<see cref="IWaitQueryStore"/>).
+    /// </summary>
+    internal IReadOnlyList<(string Operator, string Value)>? Criteria { get; set; }
+}
+
+/// <summary>
+/// Marks a store that honours <see cref="MessageQuery.AfterId"/>, <see cref="MessageQuery.OldestFirst"/> and
+/// <see cref="MessageQuery.Criteria"/>. The wait API needs all three; a host store written for 2.2 ignores them
+/// and would return mail sent before the cursor, so the wait API answers 501 for it instead (ADR-0003 A2).
+/// </summary>
+internal interface IWaitQueryStore : IMailStore
+{
 }
 
 /// <summary>A mailbox — created automatically for each recipient address.</summary>

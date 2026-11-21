@@ -80,30 +80,33 @@ internal static class HtmlChecks
     private static readonly HashSet<string> UnsupportedElements =
         new(StringComparer.OrdinalIgnoreCase) { "script", "form", "iframe", "object", "embed", "video" };
 
+    private const string Removed = "\u200B";
+
+    // The preview strip's own tag pattern, read the way a browser tokenizer reads tags (WHATWG): a quote opens a
+    // value only right after "="; anywhere else (an attribute name, an unquoted value) it is an ordinary
+    // character. The shared Tag pattern pairs quotes anywhere, which is fine for the checks but would let it
+    // absorb a real <base> into a tag it keeps (<p a"><base href=…>">).
+    private static readonly Regex BrowserTag = new(@"<([a-z][a-z0-9]*)([\s/](?:=\s*""[^""]*""|=\s*'[^']*'|[^>])*)?>", Options, Timeout);
+
     /// <summary>
     /// Removes <c>&lt;base&gt;</c> and <c>&lt;meta http-equiv=refresh&gt;</c> before the preview is served
     /// (ADR-0003 D8): email clients strip both, and they would retarget or navigate the preview frame.
     /// </summary>
     public static string StripBaseAndRefresh(string html)
     {
-        // Repeat until stable so removal cannot splice a new tag together ("<ba<base>se …>"). Each pass removes
-        // at least one tag, so the loop is bounded by the tag count; in practice it runs once or twice.
+        // One pass, linear in the input (a repeat-until-stable loop is quadratic on nested input). A removed tag
+        // becomes a zero-width space, which an HTML tokenizer keeps inside a tag name (WHATWG "tag name state":
+        // only whitespace, "/" and ">" end it), so removal cannot splice a new tag together: "<base<base> href>"
+        // becomes a tag named "base\u200B", and "<ba<base>se>" one named "ba\u200Bse", neither of them base.
         // This is preview fidelity, not a security boundary (the frame is sandboxed and served with CSP sandbox).
-        // Tags are matched and their attributes decoded exactly as the checks do, so "&#x72;efresh" and
-        // "<meta/http-equiv=refresh>" are caught too.
-        string previous;
-        do
+        // Attributes are decoded exactly as the checks do, so "&#x72;efresh" and "<meta/http-equiv=refresh>"
+        // are caught too.
+        return BrowserTag.Replace(html, m =>
         {
-            previous = html;
-            html = Tag.Replace(html, m =>
-            {
-                var name = m.Groups[1].Value;
-                var candidate = name.Equals("base", StringComparison.OrdinalIgnoreCase) || name.Equals("meta", StringComparison.OrdinalIgnoreCase);
-                return candidate && IsBaseOrRefresh(name, ParseAttributes(m.Groups[2].Value)) ? string.Empty : m.Value;
-            });
-        }
-        while (html.Length != previous.Length);
-        return html;
+            var name = m.Groups[1].Value;
+            var candidate = name.Equals("base", StringComparison.OrdinalIgnoreCase) || name.Equals("meta", StringComparison.OrdinalIgnoreCase);
+            return candidate && IsBaseOrRefresh(name, ParseAttributes(m.Groups[2].Value)) ? Removed : m.Value;
+        });
     }
 
     private static bool IsBaseOrRefresh(string tagName, Dictionary<string, string> attributes) =>

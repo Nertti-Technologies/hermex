@@ -240,4 +240,56 @@ public sealed class MailboxManagementTests
         }
         throw new TimeoutException("The IMAP listener did not start.");
     }
+
+    [Fact]
+    public void Delete_context_built_as_in_2_2_keeps_its_meaning()
+    {
+        Assert.Equal(HermexDeleteScope.Message, new HermexDeletingContext { MessageId = 5 }.Scope);
+        Assert.Equal(HermexDeleteScope.All, new HermexDeletingContext().Scope);
+        Assert.Equal(HermexDeleteScope.Mailbox, new HermexDeletingContext { Scope = HermexDeleteScope.Mailbox }.Scope);
+        Assert.Equal(HermexDeleteScope.Messages, new HermexDeletingContext { MessageIds = BulkIds }.Scope);
+        Assert.Equal(HermexDeleteScope.Mailbox, new HermexDeletingContext { MailboxAddress = "a@x.test" }.Scope);
+    }
+
+    private static readonly long[] BulkIds = { 1, 2 };
+
+    [Fact]
+    public async Task Mark_read_needs_the_request_header_even_without_authorization()
+    {
+        await using var host = await HermexTestHost.StartAsync();
+        var id = await host.SeedMessageAsync();
+        using (var crossSite = await host.Client.PostAsync($"/hermex/api/messages/{id}/read", null))
+            Assert.Equal(HttpStatusCode.BadRequest, crossSite.StatusCode);
+        using var request = new HttpRequestMessage(HttpMethod.Post, $"/hermex/api/messages/{id}/read");
+        request.Headers.Add(Hermex.Internal.HermexRoutes.RequestHeader, "1");
+        using var ok = await host.Client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, ok.StatusCode);
+    }
+
+    [Fact]
+    public async Task Bulk_delete_of_one_message_sets_MessageId_for_2_2_hooks()
+    {
+        var seen = new List<HermexDeletingContext>();
+        await using var host = await HermexTestHost.StartAsync(o => o.Events.OnDeleting = ctx =>
+        {
+            seen.Add(ctx);
+            ctx.Reject("audit only");
+            return Task.CompletedTask;
+        });
+        var one = await host.SeedMessageAsync();
+        var two = await host.SeedMessageAsync();
+        foreach (var ids in new[] { new[] { one }, new[] { one, two } })
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, "/hermex/api/messages/bulk-delete")
+            {
+                Content = System.Net.Http.Json.JsonContent.Create(new { ids }),
+            };
+            request.Headers.Add(Hermex.Internal.HermexRoutes.RequestHeader, "1");
+            using var response = await host.Client.SendAsync(request);
+        }
+        Assert.Equal(2, seen.Count);
+        Assert.Equal(one, seen[0].MessageId);
+        Assert.Null(seen[1].MessageId);
+        Assert.All(seen, c => Assert.Equal(HermexDeleteScope.Messages, c.Scope));
+    }
 }

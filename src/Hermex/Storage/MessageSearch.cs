@@ -49,6 +49,22 @@ internal static class MessageSearch
         }
     }
 
+    /// <summary>
+    /// Appends one clause per (operator, value) criterion, as <c>operator:"value"</c> would, without parsing text.
+    /// Operators come from the caller's fixed set (to, from, subject, mailbox); values are parameters.
+    /// </summary>
+    public static void AppendCriteria(IReadOnlyList<(string Operator, string Value)>? criteria, List<string> clauses,
+        List<KeyValuePair<string, object>> parameters)
+    {
+        if (criteria is null)
+            return;
+        for (var i = 0; i < criteria.Count; i++)
+        {
+            var (op, value) = criteria[i];
+            clauses.Add(BuildClause(new Token(op, value, Negated: false, Raw: value), $"@c{i}", parameters));
+        }
+    }
+
     private static string BuildClause(Token token, string name, List<KeyValuePair<string, object>> parameters)
     {
         switch (token.Operator)

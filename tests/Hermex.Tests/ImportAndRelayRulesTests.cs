@@ -117,7 +117,12 @@ public sealed class ImportAndRelayRulesTests
         Assert.Contains("recipient rules", refused.Error, StringComparison.Ordinal);
         Assert.Single(seen); // the hook never saw it
 
-        using var api = await host.Client.PostAsync($"/hermex/api/messages/{outsiders}/relay", null);
+        // Without the request header (a cross-site simple POST) relay is refused before it runs.
+        using (var crossSite = await host.Client.PostAsync($"/hermex/api/messages/{outsiders}/relay", null))
+            Assert.Equal(HttpStatusCode.BadRequest, crossSite.StatusCode);
+        using var request = new HttpRequestMessage(HttpMethod.Post, $"/hermex/api/messages/{outsiders}/relay");
+        request.Headers.Add(Hermex.Internal.HermexRoutes.RequestHeader, "1");
+        using var api = await host.Client.SendAsync(request);
         Assert.Equal(HttpStatusCode.Forbidden, api.StatusCode);
     }
 

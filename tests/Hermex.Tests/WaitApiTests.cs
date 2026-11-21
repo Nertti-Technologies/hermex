@@ -84,6 +84,40 @@ public sealed class WaitApiTests
         Assert.True(DateTime.UtcNow - started < TimeSpan.FromSeconds(10), "the waiter missed the signal and waited out its timeout");
     }
 
+    [Fact]
+    public async Task Values_may_hold_quotes()
+    {
+        await using var host = await HermexTestHost.StartAsync();
+        var wait = host.Client.GetAsync("/hermex/api/messages/wait?subject=" + Uri.EscapeDataString("Your \"Pro\" plan") + "&after=0&timeout=20");
+        await SendAsync(host, "ann@example.test", "Your \"Pro\" plan is active");
+        using var response = await wait;
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task A_store_written_for_2_2_gets_501_instead_of_old_mail()
+    {
+        await using var host = await HermexTestHost.StartAsync(services: s => s.AddSingleton<IMailStore>(sp =>
+            PlainStore.Create(ActivatorUtilities.CreateInstance<SqliteMailStore>(sp))));
+        using var response = await host.Client.GetAsync("/hermex/api/messages/wait?subject=x&timeout=1");
+        Assert.Equal(HttpStatusCode.NotImplemented, response.StatusCode);
+    }
+
+    /// <summary>An IMailStore that only forwards, as a host's own 2.2 store would look to Hermex.</summary>
+    public class PlainStore : DispatchProxy
+    {
+        private IMailStore _inner = null!;
+
+        public static IMailStore Create(IMailStore inner)
+        {
+            var proxy = Create<IMailStore, PlainStore>();
+            ((PlainStore)(object)proxy)._inner = inner;
+            return proxy;
+        }
+
+        protected override object? Invoke(MethodInfo? targetMethod, object?[]? args) => targetMethod!.Invoke(_inner, args);
+    }
+
     /// <summary>Forwards to the real store; after the first empty wait check it stores a match and pulses.</summary>
     public class RacingStore : DispatchProxy
     {
@@ -94,7 +128,7 @@ public sealed class WaitApiTests
 
         public static IMailStore Create(IMailStore inner, IServiceProvider services)
         {
-            var proxy = Create<IMailStore, RacingStore>();
+            var proxy = Create<IWaitQueryStore, RacingStore>(); // the wait API needs a store that honours its query
             var racing = (RacingStore)(object)proxy;
             racing._inner = inner;
             racing._services = services;
@@ -104,7 +138,7 @@ public sealed class WaitApiTests
         protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
         {
             var result = targetMethod!.Invoke(_inner, args);
-            if (targetMethod.Name == nameof(IMailStore.GetMessagesAsync) && args![0] is MessageQuery { AfterId: not null, Search: not null }
+            if (targetMethod.Name == nameof(IMailStore.GetMessagesAsync) && args![0] is MessageQuery { AfterId: not null, Criteria: not null }
                 && Interlocked.Exchange(ref _raced, 1) == 0)
                 return RaceAsync((Task<PagedResult<MessageSummary>>)result!);
             return result;
@@ -133,9 +167,8 @@ public sealed class WaitApiTests
     [InlineData("timeout=0")]
     [InlineData("timeout=121")]
     [InlineData("after=-1")]
-    [InlineData("subject=%22quoted%22")]
     [InlineData("to=a%0Ab")]
-    [InlineData("to=" + Long200 + "&from=" + Long200 + "&subject=" + Long200)]  // 3 × 200 + syntax > 512
+    [InlineData("to=" + Long200 + "a")]                                          // over 200 characters
     public async Task Invalid_requests_are_400(string query)
     {
         await using var host = await HermexTestHost.StartAsync();

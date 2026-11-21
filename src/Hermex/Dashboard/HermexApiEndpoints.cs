@@ -27,6 +27,15 @@ internal static class HermexApiEndpoints
         if (authorization.IsEnabled)
             api.AddEndpointFilter(HermexEndpointAuthorization.RequireRequestHeader);
 
+        // Routes a cross-site page could otherwise trigger without a preflight (no body, or a multipart body)
+        // and that change state: they need the request header even without authorization. With authorization
+        // the group filter above already applies.
+        void RequireHeaderWithoutAuthorization(RouteHandlerBuilder route)
+        {
+            if (!authorization.IsEnabled)
+                route.AddEndpointFilter(HermexEndpointAuthorization.RequireRequestHeader);
+        }
+
         const HermexEndpointTier Viewer = HermexEndpointTier.Viewer;
         const HermexEndpointTier Manager = HermexEndpointTier.Manager;
         const HermexEndpointTier Admin = HermexEndpointTier.Admin;
@@ -61,8 +70,11 @@ internal static class HermexApiEndpoints
                 return Results.BadRequest(new { error = $"timeout must be 1 to {WaitRequest.MaxTimeoutSeconds} seconds." });
             if (after < 0)
                 return Results.BadRequest(new { error = "after must not be negative." });
-            if (WaitRequest.BuildSearch(("to", to), ("from", from), ("subject", subject), ("mailbox", mailbox)) is not { } search)
+            if (WaitRequest.BuildCriteria(("to", to), ("from", from), ("subject", subject), ("mailbox", mailbox)) is not { } criteria)
                 return Results.BadRequest(new { error = WaitRequest.InvalidValue });
+            if (store is not IWaitQueryStore)
+                return Results.Json(new { error = "The configured mail store does not support waiting for messages." },
+                    statusCode: StatusCodes.Status501NotImplemented);
 
             if (!arrivals.TryEnter())
                 return Results.StatusCode(StatusCodes.Status429TooManyRequests);
@@ -76,7 +88,7 @@ internal static class HermexApiEndpoints
                 var cursor = after
                     ?? ((await store.GetMessagesAsync(new MessageQuery { PageSize = 1, SkipCount = true }, ct)).Items is [var newest, ..]
                         ? newest.Id : 0);
-                var query = new MessageQuery { Search = search, AfterId = cursor, OldestFirst = true, PageSize = 1, SkipCount = true };
+                var query = new MessageQuery { Criteria = criteria, AfterId = cursor, OldestFirst = true, PageSize = 1, SkipCount = true };
                 http.Response.Headers[HermexRoutes.CursorHeader] = cursor.ToString(CultureInfo.InvariantCulture);
 
                 while (true)
@@ -193,7 +205,7 @@ internal static class HermexApiEndpoints
         }).WithHermexTier(Viewer, authorization);
 
         // ---- mark read / unread -------------------------------------------
-        api.MapPost("/messages/{id:long}/read", async (long id, bool? isRead, IMailStore store, IInboxNotifier notifier) =>
+        var markRead = api.MapPost("/messages/{id:long}/read", async (long id, bool? isRead, IMailStore store, IInboxNotifier notifier) =>
         {
             var target = isRead ?? true;
             if (!await store.SetReadAsync(id, target))
@@ -201,9 +213,10 @@ internal static class HermexApiEndpoints
             await notifier.MessageUpdatedAsync(id, target);
             return Results.Ok(new { id, isRead = target });
         }).WithHermexTier(Viewer, authorization);
+        RequireHeaderWithoutAuthorization(markRead);
 
         // ---- relay a message to the configured upstream SMTP server -------
-        api.MapPost("/messages/{id:long}/relay", async (long id, IMailRelayService relay) =>
+        var relayRoute = api.MapPost("/messages/{id:long}/relay", async (long id, IMailRelayService relay) =>
         {
             if (!relay.IsEnabled)
                 return Results.BadRequest(new { error = "Relay is not enabled." });
@@ -215,6 +228,8 @@ internal static class HermexApiEndpoints
                 ? Forbidden(result.Error)
                 : Results.Problem(result.Error ?? "Relay failed.");
         }).WithHermexTier(Manager, authorization);
+        // Relay sends captured mail off this machine: never on a cross-site request (owner decision 2026-11-21).
+        RequireHeaderWithoutAuthorization(relayRoute);
 
         // ---- delete a single message --------------------------------------
         api.MapDelete("/messages/{id:long}", async (long id, IMailStore store, IInboxNotifier notifier,
@@ -244,8 +259,7 @@ internal static class HermexApiEndpoints
             HermexEventDispatcher events, IHermexEventLog eventLog, CancellationToken ct) =>
                 EmlImport.HandleAsync(request, sink, options, events, eventLog, ct))
             .WithHermexTier(Manager, authorization);
-        if (!authorization.IsEnabled)
-            import.AddEndpointFilter(HermexEndpointAuthorization.RequireRequestHeader);
+        RequireHeaderWithoutAuthorization(import);
 
         // ---- bulk delete / mark read --------------------------------------
         // Separate routes so each carries one tier. An empty or oversized id list is a 400, never "all".
@@ -260,6 +274,8 @@ internal static class HermexApiEndpoints
             {
                 Scope = HermexDeleteScope.Messages,
                 MessageIds = ids,
+                // A 2.2 hook that protects messages by MessageId still sees a one-message selection.
+                MessageId = ids.Count == 1 ? ids[0] : null,
                 HttpContext = events.HttpContext,
                 CancellationToken = ct,
             };
@@ -439,8 +455,11 @@ internal static class HermexApiEndpoints
             deliveries = webhooks.Deliveries,
         })).WithHermexTier(Admin, authorization);
 
-        api.MapPost("/webhooks/{index:int}/resume", (int index, WebhookService webhooks) =>
+        var resume = api.MapPost("/webhooks/{index:int}/resume", (int index, WebhookService webhooks) =>
             webhooks.Resume(index) ? Results.Ok() : Results.NotFound()).WithHermexTier(Admin, authorization);
+        // No body, so without authorization a cross-site page could post it as a simple request; with
+        // authorization the api group already requires the header.
+        RequireHeaderWithoutAuthorization(resume);
 
         // ---- diagnostic logs ----------------------------------------------
         api.MapGet("/logs", async (int? limit, IMailStore store) =>
@@ -552,24 +571,21 @@ internal static class HermexApiEndpoints
         public const int MaxValueLength = 200;
 
         public const string InvalidValue =
-            "to, from, subject and mailbox are limited to 200 characters each (and the search they form to 512), " +
-            "and must not contain quotes or control characters.";
+            "to, from, subject and mailbox are limited to 200 characters each and must not contain control characters.";
 
-        /// <summary>Turns the criteria into the search syntax (ADR-0003 D9), or null when a value is invalid.</summary>
-        public static string? BuildSearch(params (string Operator, string? Value)[] criteria)
+        /// <summary>The criteria that are set, matched like the search operators (ADR-0003 D9), or null when a value is invalid.</summary>
+        public static List<(string Operator, string Value)>? BuildCriteria(params (string Operator, string? Value)[] criteria)
         {
-            var terms = new List<string>();
+            var terms = new List<(string, string)>();
             foreach (var (op, value) in criteria)
             {
                 if (string.IsNullOrEmpty(value))
                     continue;
-                if (value.Length > MaxValueLength || value.Any(c => c == '"' || char.IsControl(c)))
+                if (value.Length > MaxValueLength || value.Any(char.IsControl))
                     return null;
-                terms.Add($"{op}:\"{value}\"");
+                terms.Add((op, value));
             }
-            var search = string.Join(' ', terms);
-            // The search parser ignores text past its limit; refuse rather than match on fewer criteria.
-            return search.Length > MessageSearch.MaxQueryLength ? null : search;
+            return terms;
         }
     }
 

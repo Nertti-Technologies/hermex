@@ -12,7 +12,7 @@
     <AssemblyName>Hermex</AssemblyName>
     <RootNamespace>Hermex</RootNamespace>
     <Title>Hermex — in-process SMTP/IMAP server &amp; dashboard</Title>
-    <Version>2.2.1</Version>
+    <Version>2.3.0</Version>
     <Description>An in-process SMTP and IMAP server with an executive-grade web dashboard for .NET applications. Capture, inspect and debug the HTML/text mail your app sends — no Docker, no external service. Register with services.AddHermex() and app.UseHermex().</Description>
     <PackageTags>smtp;imap;email;mail;mailserver;dev;testing;dashboard;razor-pages;signalr</PackageTags>
     <!-- The repository README is also the nuget.org readme: CI (.github/scripts/check-package-readme.sh)

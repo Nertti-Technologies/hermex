@@ -71,6 +71,8 @@ public sealed class WebhookTests
     [InlineData("192.168.1.1", false, false)]
     [InlineData("100.64.0.1", false, false)]
     [InlineData("fd00::1", false, false)]
+    [InlineData("64:ff9b:1::a00:5", false, false)]    // local-use NAT64 (RFC 8215) is always refused
+    [InlineData("64:ff9b:1::a9fe:a9fe", true, false)]
     [InlineData("93.184.216.34", false, true)]
     [InlineData("2606:2800:220:1:248:1893:25c8:1946", false, true)]
     public void Network_guard(string address, bool allowPrivate, bool allowed) =>
@@ -153,10 +155,15 @@ public sealed class WebhookTests
         await SendAsync(host, "Body");
         await Until(() => service.Skipped > 0); // counted, not logged per notice
 
-        using var resume = await host.Client.PostAsync("/hermex/api/webhooks/0/resume", null);
+        // Without the request header (a cross-site simple POST) nothing changes, even with authorization off.
+        using (var crossSite = await host.Client.PostAsync("/hermex/api/webhooks/0/resume", null))
+            Assert.Equal(HttpStatusCode.BadRequest, crossSite.StatusCode);
+        Assert.Equal("Disabled", service.Endpoints[0].State);
+
+        using var resume = await Resume(host, 0);
         Assert.Equal(HttpStatusCode.OK, resume.StatusCode);
         Assert.Equal("Active", service.Endpoints[0].State);
-        using var missing = await host.Client.PostAsync("/hermex/api/webhooks/5/resume", null);
+        using var missing = await Resume(host, 5);
         Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
     }
 
@@ -363,5 +370,12 @@ public sealed class WebhookTests
             await _app.DisposeAsync();
             _arrived.Dispose();
         }
+    }
+
+    private static async Task<HttpResponseMessage> Resume(HermexTestHost host, int index)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, $"/hermex/api/webhooks/{index}/resume");
+        request.Headers.Add(Hermex.Internal.HermexRoutes.RequestHeader, "1");
+        return await host.Client.SendAsync(request);
     }
 }

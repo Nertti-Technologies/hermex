@@ -115,7 +115,10 @@ internal sealed class MailPersistenceService : BackgroundService
         }
         catch (OperationCanceledException) { /* shutting down */ }
 
-        // Flush whatever is still queued so nothing is lost on shutdown.
+        // Flush whatever is still queued so nothing is lost on shutdown. The SMTP listener has already stopped
+        // accepting connections (it is registered after this service, so it stops first; see
+        // HermexServiceCollectionExtensions). Sessions in progress are not awaited, so one can still submit
+        // after this flush.
         var remaining = new List<ReceivedMessage>();
         while (reader.TryRead(out var message))
             remaining.Add(message);

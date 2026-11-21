@@ -105,7 +105,8 @@
     async function api(path, options) {
         options = options || {};
         // X-Hermex-Request is required on state-changing calls when the host sets
-        // authorization policies (HermexRoutes.RequestHeader); keep the two in step.
+        // authorization policies, and on relay, mark-read, import and webhook resume always
+        // (HermexRoutes.RequestHeader, HermexApiEndpoints); keep the two in step.
         var headers = Object.assign({ 'Accept': 'application/json', 'X-Hermex-Request': '1' }, options.headers || {});
         var res = await fetch(API + path, Object.assign({}, options, { headers: headers }));
         if (!res.ok) {

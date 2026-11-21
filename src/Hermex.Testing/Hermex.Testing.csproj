@@ -11,7 +11,7 @@
     <AssemblyName>Hermex.Testing</AssemblyName>
     <RootNamespace>Hermex.Testing</RootNamespace>
     <Title>Hermex.Testing — wait for and inspect captured mail in tests</Title>
-    <Version>2.2.1</Version>
+    <Version>2.3.0</Version>
     <Description>Test helper for Hermex: wait for the email your app sends, then read its subject, body, HTML and links. Works with WebApplicationFactory or any running Hermex host. No dependencies.</Description>
     <PackageTags>smtp;email;testing;integration-tests;hermex</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
