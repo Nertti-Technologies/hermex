@@ -17,7 +17,7 @@
     var ICON_RELAY = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4z"/></svg>';
     var ICON_FOLDER = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>';
 
-    var state = { page: 1, search: '', unread: false, selectedId: null, mailboxId: null, totalPages: 1, detail: null, relayEnabled: false, sourceCache: {}, checked: new Set(), pageIds: [], focusId: null };
+    var state = { page: 1, search: '', unread: false, selectedId: null, mailboxId: null, totalPages: 1, detail: null, relayEnabled: false, sourceCache: {}, checksCache: {}, preview: { width: 0, dark: false }, checked: new Set(), pageIds: [], focusId: null };
     var el = {};
 
     function cache() {
@@ -380,6 +380,7 @@
         var tabs = [];
         if (d.htmlBody != null) tabs.push({ id: 'html', label: 'HTML' });
         if (d.textBody != null) tabs.push({ id: 'text', label: 'Text' });
+        tabs.push({ id: 'checks', label: 'Checks' });
         tabs.push({ id: 'structure', label: 'Structure' });
         tabs.push({ id: 'headers', label: 'Headers' });
         if (d.attachments && d.attachments.length) {
@@ -446,14 +447,22 @@
         var body = document.getElementById('m4d-detail-body');
         if (!body) return;
         body.classList.toggle('m4d-detail__body--pad', tabId !== 'html');
+        body.classList.toggle('m4d-detail__body--html', tabId === 'html');
 
         if (tabId === 'html') {
-            body.innerHTML = '<iframe class="m4d-html-frame" sandbox="" title="HTML message body" src="' +
-                M.API + '/messages/' + d.id + '/html"></iframe>';
+            renderPreview(body, d);
+        } else if (tabId === 'checks') {
+            renderChecks(body, d.id);
         } else if (tabId === 'text') {
             body.innerHTML = '<pre class="m4d-pre">' + M.escapeHtml(d.textBody || '') + '</pre>';
         } else if (tabId === 'headers') {
-            body.innerHTML = renderHeaders(d.headers || []);
+            body.innerHTML = '<div id="m4d-auth"></div>' + renderHeaders(d.headers || []);
+            loadChecks(d.id).then(function (c) {
+                var target = document.getElementById('m4d-auth');
+                // The user may have moved to another message or tab while this loaded.
+                if (target && c && state.detail && state.detail.id === d.id)
+                    target.innerHTML = renderAuthentication(c.authentication);
+            });
         } else if (tabId === 'attachments') {
             body.innerHTML = renderAttachments(d);
         } else if (tabId === 'structure') {
@@ -463,6 +472,148 @@
         } else if (tabId === 'source') {
             renderSource(body, d.id);
         }
+    }
+
+    /* ---------- HTML preview (ADR-0003 D8) ---------- */
+    // Widths: common viewport widths (StatCounter, mid-2026, via ADR-0003 research; estimate).
+    var PREVIEW_WIDTHS = [
+        { width: 0, label: 'Desktop', title: 'Full width' },
+        { width: 768, label: 'Tablet', title: 'Tablet, 768 px wide' },
+        { width: 390, label: '390', title: 'Phone, 390 px wide' },
+        { width: 360, label: '360', title: 'Phone, 360 px wide' },
+    ];
+
+    function renderPreview(body, d) {
+        var bar = '<div class="m4d-preview-bar" role="toolbar" aria-label="Preview size">';
+        PREVIEW_WIDTHS.forEach(function (p) {
+            bar += '<button type="button" class="m4d-seg" data-width="' + p.width + '" title="' + p.title +
+                '" aria-pressed="' + (state.preview.width === p.width) + '">' + p.label + '</button>';
+        });
+        bar += '<span class="m4d-preview-bar__spacer"></span>' +
+            '<button type="button" class="m4d-seg" data-dark title="Simulates prefers-color-scheme: dark. ' +
+            'Clients that force-invert colours look different." aria-pressed="' + state.preview.dark + '">Dark</button></div>';
+        body.innerHTML = bar + '<div class="m4d-preview"><iframe class="m4d-html-frame" sandbox="" ' +
+            'title="HTML message body" src="' + M.API + '/messages/' + d.id + '/html"></iframe></div>';
+
+        var frame = body.querySelector('iframe');
+        function apply() {
+            frame.style.width = state.preview.width ? state.preview.width + 'px' : '100%';
+            // color-scheme on the frame element sets the framed document's prefers-color-scheme
+            // (CSS Color Adjust 1 §2.1), so the email's own dark-mode styles apply.
+            frame.style.colorScheme = state.preview.dark ? 'dark' : 'light';
+            frame.classList.toggle('m4d-html-frame--dark', state.preview.dark);
+            body.querySelectorAll('[data-width]').forEach(function (b) {
+                b.setAttribute('aria-pressed', String(Number(b.dataset.width) === state.preview.width));
+            });
+            body.querySelector('[data-dark]').setAttribute('aria-pressed', String(state.preview.dark));
+        }
+        body.querySelectorAll('[data-width]').forEach(function (b) {
+            b.addEventListener('click', function () { state.preview.width = Number(b.dataset.width); apply(); });
+        });
+        body.querySelector('[data-dark]').addEventListener('click', function () {
+            state.preview.dark = !state.preview.dark;
+            apply();
+        });
+        apply();
+    }
+
+    /* ---------- checks and authentication (ADR-0003 D5, D13) ---------- */
+    function loadChecks(id) {
+        if (state.checksCache[id]) return Promise.resolve(state.checksCache[id]);
+        return M.api('/messages/' + id + '/checks').then(function (c) {
+            state.checksCache[id] = c;
+            return c;
+        }).catch(function () { return null; });
+    }
+
+    async function renderChecks(body, id) {
+        body.innerHTML = '<p class="m4d-empty__hint">Running checks…</p>';
+        var c = await loadChecks(id);
+        // Stale: another message or another tab is showing now.
+        var active = el.detail.querySelector('.m4d-tab--active');
+        if (document.getElementById('m4d-detail-body') !== body || !state.detail || state.detail.id !== id ||
+            !active || active.dataset.tab !== 'checks') return;
+        if (!c) { body.innerHTML = '<p class="m4d-empty__hint">Could not run the checks.</p>'; return; }
+
+        var report = c.html;
+        var html = '<div class="m4d-checks">';
+        if (report.hasHtml)
+            html += '<p class="m4d-checks__summary">HTML size ' + M.formatBytes(report.htmlBytes) +
+                ' · ' + report.checks.length + ' finding(s) · checked offline with built-in rules; links are not opened.</p>';
+        else
+            html += '<p class="m4d-checks__summary">This message has no HTML body. Header checks only.</p>';
+
+        if (!report.checks.length) html += '<p class="m4d-empty__hint">No findings.</p>';
+        report.checks.forEach(function (f) {
+            html += '<div class="m4d-check m4d-check--' + M.escapeHtml(f.severity) + '">' +
+                '<span class="m4d-check__sev">' + M.escapeHtml(f.severity) + '</span>' +
+                '<div class="m4d-check__body"><div class="m4d-check__msg">' + M.escapeHtml(f.message) +
+                (f.count > 1 ? ' <span class="m4d-check__count">×' + f.count + '</span>' : '') + '</div>' +
+                (f.sample ? '<code class="m4d-check__sample">' + M.escapeHtml(f.sample) + '</code>' : '') +
+                '</div></div>';
+        });
+
+        if (report.links && report.links.length) {
+            html += '<h3 class="m4d-checks__title">Links (' + report.links.length +
+                (report.linksTruncated ? '+' : '') + ')</h3><table class="m4d-headers m4d-links"><thead><tr>' +
+                '<th>Text</th><th>Target</th><th>Scheme</th><th>Count</th></tr></thead><tbody>';
+            report.links.forEach(function (l) {
+                var scheme = M.escapeHtml(l.scheme);
+                html += '<tr><td>' + M.escapeHtml(l.text || '—') + '</td><td class="m4d-links__href">' + M.escapeHtml(l.href) +
+                    '</td><td><span class="m4d-scheme m4d-scheme--' + (l.scheme === 'http' ? 'warn' : 'ok') + '">' + scheme +
+                    '</span></td><td>' + l.count + '</td></tr>';
+            });
+            html += '</tbody></table>';
+        }
+        body.innerHTML = html + '</div>';
+    }
+
+    function resultChip(result) {
+        var r = String(result || '').toLowerCase();
+        var kind = r === 'pass' ? 'ok' : (r === 'fail' || r === 'permerror' || r === 'softfail') ? 'bad' : 'neutral';
+        return '<span class="m4d-auth-chip m4d-auth-chip--' + kind + '">' + M.escapeHtml(r || '?') + '</span>';
+    }
+
+    function renderAuthentication(a) {
+        if (!a) return '';
+        var any = a.authenticationResults.length + a.receivedSpf.length + a.dkimSignatures.length +
+            a.arcAuthenticationResults.length + a.arcSignatures.length;
+        if (!any) return '';
+        var html = '<section class="m4d-auth" aria-label="Authentication headers"><h3 class="m4d-checks__title">Authentication</h3>' +
+            '<p class="m4d-auth__note">As reported by the sending path — not verified by Hermex.</p>';
+        function results(list, label) {
+            list.forEach(function (h) {
+                html += '<div class="m4d-auth__row"><span class="m4d-auth__label">' + label +
+                    (h.instance ? ' i=' + h.instance : '') + '</span><span class="m4d-auth__by">' + M.escapeHtml(h.authServId) + '</span>';
+                h.results.forEach(function (r) {
+                    html += '<span class="m4d-auth__result" title="' + M.escapeHtml(r.reason || '') + '">' +
+                        M.escapeHtml(r.method) + ' ' + resultChip(r.result) + '</span>';
+                });
+                html += '</div>';
+            });
+        }
+        results(a.authenticationResults, 'Authentication-Results');
+        a.receivedSpf.forEach(function (s) {
+            html += '<div class="m4d-auth__row"><span class="m4d-auth__label">Received-SPF</span>' + resultChip(s.result) +
+                (s.comment ? '<span class="m4d-auth__by">' + M.escapeHtml(s.comment) + '</span>' : '') + '</div>';
+        });
+        function signatures(list) {
+            list.forEach(function (s) {
+                var t = s.tags || {};
+                html += '<div class="m4d-auth__row"><span class="m4d-auth__label">' + M.escapeHtml(s.kind) +
+                    (s.instance ? ' i=' + s.instance : '') + '</span><span class="m4d-auth__by">' +
+                    ['d', 's', 'a', 'cv'].filter(function (k) { return t[k]; })
+                        .map(function (k) { return k + '=' + M.escapeHtml(t[k]); }).join(' · ') + '</span></div>';
+                s.warnings.forEach(function (w) {
+                    html += '<div class="m4d-auth__warn">' + M.escapeHtml(w) + '</div>';
+                });
+            });
+        }
+        signatures(a.dkimSignatures);
+        results(a.arcAuthenticationResults, 'ARC-Authentication-Results');
+        signatures(a.arcSignatures);
+        if (a.truncated) html += '<div class="m4d-auth__warn">Only the first 50 headers of each kind are shown.</div>';
+        return html + '</section>';
     }
 
     function renderStructure(node) {

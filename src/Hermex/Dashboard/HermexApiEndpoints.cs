@@ -1,3 +1,5 @@
+using System.Text.RegularExpressions;
+using Hermex.Analysis;
 using Hermex.Configuration;
 using Hermex.Internal;
 using Hermex.Realtime;
@@ -79,7 +81,37 @@ internal static class HermexApiEndpoints
             // images and styles still load, so the preview looks the same.
             response.Headers.ContentSecurityPolicy = "sandbox";
             response.Headers.XContentTypeOptions = "nosniff";
-            return Results.Content(RewriteCidLinks(id, detail), "text/html; charset=utf-8");
+            var html = RewriteCidLinks(id, detail);
+            try
+            {
+                html = HtmlChecks.StripBaseAndRefresh(html);
+            }
+            catch (RegexMatchTimeoutException)
+            {
+                // Preview fidelity only (ADR-0003 D8); the CSP sandbox above still applies.
+            }
+            return Results.Content(html, "text/html; charset=utf-8");
+        }).WithHermexTier(Viewer, authorization);
+
+        // ---- HTML checks and authentication headers (ADR-0003 D5, D13); read-only, not stored ----
+        api.MapGet("/messages/{id:long}/checks", async (long id, IMailStore store, CancellationToken ct) =>
+        {
+            var detail = await store.GetMessageAsync(id, ct);
+            if (detail is null)
+                return Results.NotFound();
+
+            try
+            {
+                return Results.Json(new
+                {
+                    html = HtmlChecks.Run(detail.HtmlBody, detail.TextBody is not null, detail.Headers),
+                    authentication = AuthenticationHeaders.Parse(detail.Headers),
+                });
+            }
+            catch (RegexMatchTimeoutException)
+            {
+                return Results.Problem("The checks took too long on this message.", statusCode: StatusCodes.Status503ServiceUnavailable);
+            }
         }).WithHermexTier(Viewer, authorization);
 
         // ---- raw .eml download --------------------------------------------

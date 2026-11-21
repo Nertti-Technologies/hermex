@@ -1,3 +1,4 @@
+using Hermex.Internal;
 using System.Text;
 
 namespace Hermex.Mime;
@@ -139,7 +140,7 @@ public static class MimeParser
             var colon = line.IndexOf(':');
             if (colon <= 0)
             {
-                warnings.Add($"Skipped malformed header line: '{Truncate(line, 60)}'.");
+                warnings.Add($"Skipped malformed header line: '{TextLimits.Truncate(line, 60)}'.");
                 continue;
             }
 
@@ -331,7 +332,4 @@ public static class MimeParser
         if (lineStart < block.Length)
             yield return block[lineStart..];
     }
-
-    private static string Truncate(string value, int max) =>
-        value.Length <= max ? value : value[..max] + "…";
 }

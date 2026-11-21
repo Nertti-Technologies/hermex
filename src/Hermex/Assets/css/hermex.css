@@ -672,6 +672,7 @@ a:hover { text-decoration: underline; }
     padding: 0;
 }
 .m4d-detail__body--pad { padding: 22px 26px; }
+.m4d-detail__body--html { display: flex; flex-direction: column; overflow: hidden; }
 
 .m4d-html-frame {
     width: 100%;
@@ -679,6 +680,42 @@ a:hover { text-decoration: underline; }
     border: 0;
     background: #ffffff;
 }
+
+/* Preview toolbar and sized frame (ADR-0003 D8) */
+.m4d-preview-bar { display: flex; align-items: center; gap: 4px; padding: 8px 16px; border-bottom: 1px solid var(--border); background: var(--surface); flex: none; flex-wrap: wrap; }
+.m4d-preview-bar__spacer { flex: 1; }
+.m4d-seg { font: inherit; font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface); color: var(--text-muted); cursor: pointer; }
+.m4d-seg:hover { color: var(--text); }
+.m4d-seg[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+.m4d-seg:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.m4d-preview { flex: 1; min-height: 0; display: flex; justify-content: center; background: var(--surface-3); overflow: auto; }
+.m4d-preview .m4d-html-frame { flex: none; max-width: 100%; transition: width .15s ease; }
+.m4d-html-frame--dark { background: #121212; }
+
+/* Checks tab (ADR-0003 D5) and authentication section (D13) */
+.m4d-checks__summary, .m4d-auth__note { color: var(--text-muted); font-size: 12.5px; margin: 0 0 12px; }
+.m4d-checks__title { font-size: 13px; margin: 20px 0 8px; }
+.m4d-check { display: flex; gap: 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px; }
+.m4d-check__sev { flex: none; font-size: 11px; font-weight: 700; text-transform: uppercase; padding: 2px 6px; border-radius: 4px; height: max-content; }
+.m4d-check--error .m4d-check__sev { background: var(--danger-soft); color: var(--danger); }
+.m4d-check--warning .m4d-check__sev { background: var(--warning-soft); color: var(--warning); }
+.m4d-check--info .m4d-check__sev { background: var(--surface-3); color: var(--text-muted); }
+.m4d-check__body { min-width: 0; }
+.m4d-check__count { color: var(--text-muted); font-weight: 600; }
+.m4d-check__sample { display: block; margin-top: 4px; font-family: "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace; font-size: 11.5px; color: var(--text-muted); overflow-wrap: anywhere; }
+.m4d-links th { text-align: left; font-size: 12px; color: var(--text-muted); }
+.m4d-links__href { overflow-wrap: anywhere; }
+.m4d-scheme { font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 4px; background: var(--surface-3); }
+.m4d-scheme--warn { background: var(--warning-soft); color: var(--warning); }
+.m4d-auth { margin-bottom: 16px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+.m4d-auth__row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 4px 0; font-size: 12.5px; }
+.m4d-auth__label { font-weight: 600; }
+.m4d-auth__by { color: var(--text-muted); overflow-wrap: anywhere; }
+.m4d-auth__result { display: inline-flex; align-items: center; gap: 4px; }
+.m4d-auth__warn { font-size: 12px; color: var(--warning); padding: 2px 0 2px 12px; }
+.m4d-auth-chip { font-size: 11px; font-weight: 700; padding: 1px 6px; border-radius: 4px; background: var(--surface-3); color: var(--text-muted); }
+.m4d-auth-chip--ok { background: var(--success-soft); color: var(--success); }
+.m4d-auth-chip--bad { background: var(--danger-soft); color: var(--danger); }
 
 .m4d-pre {
     margin: 0;
