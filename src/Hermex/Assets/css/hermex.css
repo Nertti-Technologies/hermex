@@ -861,6 +861,13 @@ a:hover { text-decoration: underline; }
     font-weight: 700;
 }
 .m4d-level--debug   { background: var(--surface-3); color: var(--text-muted); }
+/* Webhook deliveries on the Logs page (ADR-0003 D4) */
+.m4d-webhooks { margin-bottom: 20px; }
+.m4d-webhooks__head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; padding: 18px 20px 8px; }
+.m4d-webhooks__dropped { color: var(--danger); font-size: 12.5px; font-weight: 600; white-space: nowrap; }
+.m4d-webhooks__endpoints { display: grid; gap: 6px; padding: 0 20px 12px; }
+.m4d-webhooks__endpoint { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; font-size: 12.5px; }
+.m4d-webhooks__fails { color: var(--warning); }
 .m4d-level--info    { background: var(--accent-soft); color: var(--accent); }
 .m4d-level--warning { background: var(--warning-soft); color: var(--warning); }
 .m4d-level--error   { background: var(--danger-soft); color: var(--danger); }

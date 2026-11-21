@@ -45,6 +45,12 @@ public class HermexEvents
     /// </summary>
     public Func<HermexDeletingContext, Task> OnDeleting { get; set; } = _ => Task.CompletedTask;
 
+    /// <summary>
+    /// Veto hook: before each webhook delivery attempt (ADR-0003 D4). Can reject the attempt (it is then not
+    /// retried) or add request headers, for example for an audit trail or a receiver's own token.
+    /// </summary>
+    public Func<HermexWebhookSendingContext, Task> OnWebhookSending { get; set; } = _ => Task.CompletedTask;
+
     /// <summary>Notification hook: after settings were applied.</summary>
     public Func<HermexSettingsChangedContext, Task> OnSettingsChanged { get; set; } = _ => Task.CompletedTask;
 
@@ -63,6 +69,9 @@ public class HermexEvents
 
     /// <summary>Invokes <see cref="OnDeleting"/>.</summary>
     public virtual Task Deleting(HermexDeletingContext context) => OnDeleting(context);
+
+    /// <summary>Invokes <see cref="OnWebhookSending"/>.</summary>
+    public virtual Task WebhookSending(HermexWebhookSendingContext context) => OnWebhookSending(context);
 
     /// <summary>Invokes <see cref="OnSettingsChanged"/>.</summary>
     public virtual Task SettingsChanged(HermexSettingsChangedContext context) => OnSettingsChanged(context);
@@ -127,6 +136,31 @@ public sealed class HermexRelayingContext : HermexVetoContext
 
     /// <summary><c>true</c> for automatic relay of newly captured mail, <c>false</c> for an on-demand relay.</summary>
     public required bool Automatic { get; init; }
+}
+
+/// <summary>Context for <see cref="HermexEvents.OnWebhookSending"/>.</summary>
+public sealed class HermexWebhookSendingContext : HermexVetoContext
+{
+    /// <summary>The endpoint's position in <see cref="HermexWebhookOptions.Endpoints"/>.</summary>
+    public required int EndpointIndex { get; init; }
+
+    /// <summary>The endpoint URL.</summary>
+    public required Uri Url { get; init; }
+
+    /// <summary>The notice id (<c>webhook-id</c>), the same on every attempt.</summary>
+    public required string WebhookId { get; init; }
+
+    /// <summary>The stored message the notice is about.</summary>
+    public required long MessageId { get; init; }
+
+    /// <summary>1 for the first attempt.</summary>
+    public required int Attempt { get; init; }
+
+    /// <summary>
+    /// Extra request headers to send. Names must be valid header tokens and must not be <c>webhook-*</c>,
+    /// <c>Content-Type</c> or <c>Host</c>; values must not contain line breaks. Invalid entries reject the attempt.
+    /// </summary>
+    public IDictionary<string, string> Headers { get; } = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 }
 
 /// <summary>Context for <see cref="HermexEvents.OnDeleting"/>.</summary>

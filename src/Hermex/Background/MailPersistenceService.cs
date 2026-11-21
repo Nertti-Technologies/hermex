@@ -25,6 +25,7 @@ internal sealed class MailPersistenceService : BackgroundService
 
     private readonly MailWriteQueue _queue;
     private readonly MessageArrivals _arrivals;
+    private readonly WebhookService _webhooks;
     private readonly IMailStore _store;
     private readonly IInboxNotifier _notifier;
     private readonly IMailRelayService _relay;
@@ -48,8 +49,10 @@ internal sealed class MailPersistenceService : BackgroundService
         HermexOptions options,
         HermexEventDispatcher events,
         MessageArrivals arrivals,
+        WebhookService webhooks,
         ILogger<MailPersistenceService> logger)
     {
+        _webhooks = webhooks;
         _arrivals = arrivals;
         _queue = queue;
         _store = store;
@@ -126,6 +129,7 @@ internal sealed class MailPersistenceService : BackgroundService
     private async Task PersistMessageBatchAsync(List<ReceivedMessage> batch, CancellationToken cancellationToken)
     {
         var records = new List<MessageRecord>(batch.Count);
+        var addresses = new List<(string[] To, string[] Cc)>(batch.Count); // for webhook notices (ADR-0003 D4)
 
         foreach (var received in batch)
         {
@@ -143,6 +147,7 @@ internal sealed class MailPersistenceService : BackgroundService
             }
 
             records.Add(BuildRecord(received, mime));
+            addresses.Add((mime.To.Select(a => a.Address).ToArray(), mime.Cc.Select(a => a.Address).ToArray()));
         }
 
         try
@@ -158,6 +163,8 @@ internal sealed class MailPersistenceService : BackgroundService
 
         // Committed: wake wait-API callers (ADR-0003 D6) before the slower dashboard notifications.
         _arrivals.Pulse();
+        for (var i = 0; i < records.Count; i++)
+            _webhooks.Enqueue(records[i], addresses[i].To, addresses[i].Cc); // never blocks capture
 
         foreach (var record in records)
             await _notifier.MessageReceivedAsync(ToSummary(record)).ConfigureAwait(false);

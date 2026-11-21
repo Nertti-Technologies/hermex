@@ -68,6 +68,8 @@ public static class HermexServiceCollectionExtensions
         services.AddSingleton<IHostedService>(sp => sp.GetRequiredService<ImapServerService>());
         services.AddHostedService<MailPersistenceService>();
         services.AddHostedService<RetentionService>();
+        services.AddSingleton<WebhookService>();
+        services.AddSingleton<IHostedService>(sp => sp.GetRequiredService<WebhookService>());
 
         // Runtime-editable settings, also exposed to host code.
         services.AddSingleton<HermexSettingsService>();

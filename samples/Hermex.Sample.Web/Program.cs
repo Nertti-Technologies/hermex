@@ -1,4 +1,5 @@
 using System.Net.Mail;
+using System.Security.Cryptography;
 using Hermex;
 using Hermex.Sample.Web;
 
@@ -15,6 +16,18 @@ builder.Services.AddHermex(options =>
     // Expose captured mail over IMAP — connect a real mail client to localhost:1143.
     options.EnableImap = true;
     options.ImapPort = 1143;
+
+    // Webhooks: a signed notice for every captured message. This demo posts to the sample's own
+    // /webhook-demo route; loopback is allowed because the sample runs in Development. The secret is
+    // generated at start-up; a real host reads it from user-secrets or the environment.
+    var self = (builder.Configuration["urls"] ?? "http://localhost:5170").Split(';')[0].TrimEnd('/')
+        .Replace("://*", "://localhost", StringComparison.Ordinal).Replace("://+", "://localhost", StringComparison.Ordinal)
+        .Replace("://0.0.0.0", "://localhost", StringComparison.Ordinal).Replace("://[::]", "://localhost", StringComparison.Ordinal);
+    options.Webhooks.Endpoints.Add(new HermexWebhookEndpoint
+    {
+        Url = new Uri(self + "/webhook-demo"),
+        Secret = "whsec_" + Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)),
+    });
 });
 
 var app = builder.Build();
@@ -24,6 +37,13 @@ app.UseHermex();
 
 // A tiny landing page that sends test mail through the in-process SMTP server.
 app.MapGet("/", () => Results.Content(SamplePages.Landing, "text/html"));
+
+// The webhook receiver for the demo above. A real receiver verifies webhook-signature first.
+app.MapPost("/webhook-demo", (HttpRequest request, ILogger<Program> logger) =>
+{
+    logger.LogInformation("Webhook {WebhookId} received.", request.Headers["webhook-id"].ToString());
+    return Results.NoContent();
+});
 
 app.MapPost("/api/send/{kind}", async (string kind, int? count, HermexRuntimeState state) =>
 {

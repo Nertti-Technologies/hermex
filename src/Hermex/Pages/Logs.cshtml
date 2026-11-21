@@ -27,6 +27,32 @@
         </div>
     </div>
 
+    <section class="m4d-card m4d-card--flush m4d-webhooks" id="m4d-webhooks" hidden aria-labelledby="m4d-webhooks-title">
+        <div class="m4d-webhooks__head">
+            <div>
+                <h2 class="m4d-card__title" id="m4d-webhooks-title">Webhook deliveries</h2>
+                <p class="m4d-page__subtitle">Endpoints are set in code. The newest 500 attempts since start-up; nothing is kept after a restart.</p>
+            </div>
+            <span class="m4d-webhooks__dropped" id="m4d-webhooks-dropped"></span>
+        </div>
+        <div class="m4d-webhooks__endpoints" id="m4d-webhooks-endpoints"></div>
+        <table class="m4d-table">
+            <thead>
+                <tr>
+                    <th class="m4d-col-time">Time</th>
+                    <th>Outcome</th>
+                    <th>Endpoint</th>
+                    <th>Message</th>
+                    <th>Attempt</th>
+                    <th>Status</th>
+                    <th>Time taken</th>
+                    <th>Detail</th>
+                </tr>
+            </thead>
+            <tbody id="m4d-webhooks-body"></tbody>
+        </table>
+    </section>
+
     <div class="m4d-card m4d-card--flush">
         <table class="m4d-table" id="m4d-log-table">
             <thead>

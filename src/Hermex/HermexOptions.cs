@@ -115,6 +115,11 @@ public sealed class HermexOptions
     /// <summary>Optional forwarding of captured mail to a real upstream SMTP server.</summary>
     public HermexRelayOptions Relay { get; } = new();
 
+    // ----------------------------------------------------------------- Webhooks
+
+    /// <summary>Optional signed HTTP notices to other services when a message is captured (ADR-0003 D4).</summary>
+    public HermexWebhookOptions Webhooks { get; } = new();
+
     // ----------------------------------------------------------------- Storage
 
     /// <summary>
@@ -240,6 +245,7 @@ public sealed class HermexOptions
             throw new HermexConfigurationException("HermexOptions.ImapPort and HermexOptions.SmtpPort must differ.");
 
         Relay.Validate();
+        Webhooks.Validate();
 
         // ResolveListenAddress throws if the address is malformed.
         _ = ResolveListenAddress();

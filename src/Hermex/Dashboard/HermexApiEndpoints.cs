@@ -1,3 +1,4 @@
+using Hermex.Background;
 using Microsoft.Data.Sqlite;
 using System.Globalization;
 using System.Text.RegularExpressions;
@@ -416,6 +417,19 @@ internal static class HermexApiEndpoints
                 },
             });
         }).WithHermexTier(Viewer, authorization);
+
+        // ---- webhook deliveries (ADR-0003 D4); endpoints themselves are code-only ----
+        api.MapGet("/webhooks/deliveries", (WebhookService webhooks) => Results.Json(new
+        {
+            enabled = webhooks.Enabled,
+            dropped = webhooks.Dropped,
+            skipped = webhooks.Skipped,
+            endpoints = webhooks.Endpoints,
+            deliveries = webhooks.Deliveries,
+        })).WithHermexTier(Admin, authorization);
+
+        api.MapPost("/webhooks/{index:int}/resume", (int index, WebhookService webhooks) =>
+            webhooks.Resume(index) ? Results.Ok() : Results.NotFound()).WithHermexTier(Admin, authorization);
 
         // ---- diagnostic logs ----------------------------------------------
         api.MapGet("/logs", async (int? limit, IMailStore store) =>
