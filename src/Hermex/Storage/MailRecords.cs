@@ -27,6 +27,9 @@ public sealed class MessageRecord
     /// <summary>The <c>To</c> header recipients, formatted for display.</summary>
     public string ToDisplay { get; init; } = string.Empty;
 
+    /// <summary>Cc header addresses for display and <c>cc:</c> search, or <c>null</c> when there is no Cc.</summary>
+    public string? CcDisplay { get; init; }
+
     /// <summary>The decoded subject.</summary>
     public string Subject { get; init; } = string.Empty;
 
@@ -175,6 +178,31 @@ public sealed class MessageQuery
 
     /// <summary>When set, only messages routed to this mailbox are returned.</summary>
     public long? MailboxId { get; set; }
+
+    /// <summary>When set, only messages with an id greater than this are returned (ids only grow).</summary>
+    public long? AfterId { get; set; }
+
+    /// <summary>When true, the oldest message comes first; by default the newest does.</summary>
+    public bool OldestFirst { get; set; }
+
+    /// <summary>Skips the total count (TotalCount is then 0); for callers that only read the first item.</summary>
+    internal bool SkipCount { get; set; }
+
+    /// <summary>
+    /// Field "contains" criteria from the wait API (operator, value), matched like the search operators but
+    /// without going through search text, so a value may hold quotes. Only the built-in store reads it
+    /// (<see cref="IWaitQueryStore"/>).
+    /// </summary>
+    internal IReadOnlyList<(string Operator, string Value)>? Criteria { get; set; }
+}
+
+/// <summary>
+/// Marks a store that honours <see cref="MessageQuery.AfterId"/>, <see cref="MessageQuery.OldestFirst"/> and
+/// <see cref="MessageQuery.Criteria"/>. The wait API needs all three; a host store written for 2.2 ignores them
+/// and would return mail sent before the cursor, so the wait API answers 501 for it instead (ADR-0003 A2).
+/// </summary>
+internal interface IWaitQueryStore : IMailStore
+{
 }
 
 /// <summary>A mailbox — created automatically for each recipient address.</summary>
@@ -195,6 +223,29 @@ public sealed class Mailbox
 
     /// <summary>Number of unread messages in the mailbox.</summary>
     public int UnreadCount { get; init; }
+}
+
+/// <summary>Outcome of <see cref="IMailStore.DeleteMailboxAsync"/>.</summary>
+public sealed class MailboxDeleteResult
+{
+    /// <summary>Address of the deleted mailbox.</summary>
+    public string Address { get; init; } = string.Empty;
+
+    /// <summary>Ids of the messages removed because no other mailbox held them.</summary>
+    public IReadOnlyList<long> DeletedMessageIds { get; init; } = Array.Empty<long>();
+}
+
+/// <summary>Outcome of <see cref="IMailStore.ResetAsync"/>.</summary>
+public sealed class StoreResetResult
+{
+    /// <summary>Messages removed.</summary>
+    public int MessagesDeleted { get; init; }
+
+    /// <summary>Mailboxes removed (INBOX is kept).</summary>
+    public int MailboxesDeleted { get; init; }
+
+    /// <summary>Diagnostic log entries removed.</summary>
+    public int LogsDeleted { get; init; }
 }
 
 /// <summary>One message as it appears inside a mailbox (used by the IMAP server).</summary>

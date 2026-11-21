@@ -31,6 +31,11 @@ internal sealed class ImapSession
     private Stream _stream = Stream.Null;
     private ImapLineReader _reader = null!;
 
+    // How often a UID command may re-check the store (estimate: clients poll with NOOP every few seconds or
+    // more, so one second keeps UID bursts cheap without hiding changes for long).
+    private static readonly TimeSpan UidSyncInterval = TimeSpan.FromSeconds(1);
+    private long _lastSyncTimestamp;
+
     private bool _authenticated;
     private Mailbox? _selected;
     private bool _readOnly;
@@ -167,6 +172,13 @@ internal sealed class ImapSession
         var space2 = rest.IndexOf(' ');
         var command = (space2 < 0 ? rest : rest[..space2]).ToUpperInvariant();
         var args = space2 < 0 ? string.Empty : rest[(space2 + 1)..].Trim();
+
+        // Report changes made outside this session (dashboard deletes, a mailbox delete, a reset) only on
+        // commands that may carry untagged EXPUNGE: never during FETCH, STORE or SEARCH (RFC 9051 §7.5.1).
+        // Clients send UID commands in bursts while syncing, so those sync at most once per UidSyncInterval.
+        if (_selected is not null && NeedsSync(command)
+            && !await SyncSelectedAsync(ct).ConfigureAwait(false))
+            return false;
 
         switch (command)
         {
@@ -632,15 +644,7 @@ internal sealed class ImapSession
         }
 
         var expungedUids = await _store.ExpungeMailboxAsync(_selected!.Id, ct).ConfigureAwait(false);
-
-        // Send * <seq> EXPUNGE in descending order so lower sequence numbers stay valid.
-        var sequences = expungedUids
-            .Select(uid => _messages.FirstOrDefault(m => m.Uid == uid)?.SequenceNumber ?? 0)
-            .Where(seq => seq > 0)
-            .OrderByDescending(seq => seq);
-        foreach (var seq in sequences)
-            await SendAsync($"* {seq} EXPUNGE", ct).ConfigureAwait(false);
-
+        await SendExpungesAsync(expungedUids.ToHashSet(), ct).ConfigureAwait(false);
         await RefreshSelectedAsync(ct).ConfigureAwait(false);
         await SendAsync($"{tag} OK EXPUNGE completed", ct).ConfigureAwait(false);
     }
@@ -657,10 +661,115 @@ internal sealed class ImapSession
 
     // -------------------------------------------------------------- helpers
 
+    /// <summary>
+    /// Refreshes flags and appends newly arrived messages (announced with <c>* n EXISTS</c>, which is allowed
+    /// during any command). Removals are left to <see cref="SyncSelectedAsync"/> or an EXPUNGE, because
+    /// <c>* n EXPUNGE</c> must not be sent during FETCH, STORE or SEARCH.
+    /// </summary>
     private async Task RefreshSelectedAsync(CancellationToken ct)
     {
-        if (_selected is not null)
-            _messages = await _store.GetMailboxMessagesAsync(_selected.Id, ct).ConfigureAwait(false);
+        if (_selected is null)
+            return;
+
+        var all = await _store.GetMailboxMessagesAsync(_selected.Id, ct).ConfigureAwait(false);
+        var latest = all.ToDictionary(m => m.Uid);
+        var highestKnown = _messages.Count == 0 ? 0 : _messages.Max(m => m.Uid);
+        var sequence = _messages.Count;
+        var arrived = all.Where(m => m.Uid > highestKnown)
+            .Select(m => new MailboxMessageInfo
+            {
+                SequenceNumber = ++sequence,
+                Uid = m.Uid,
+                IsDeleted = m.IsDeleted,
+                IsSeen = m.IsSeen,
+                Size = m.Size,
+                ReceivedAtUtc = m.ReceivedAtUtc,
+            })
+            .ToList();
+
+        _messages = _messages
+            .Select(m => latest.TryGetValue(m.Uid, out var current)
+                ? new MailboxMessageInfo
+                {
+                    SequenceNumber = m.SequenceNumber,
+                    Uid = m.Uid,
+                    IsDeleted = current.IsDeleted,
+                    IsSeen = current.IsSeen,
+                    Size = m.Size,
+                    ReceivedAtUtc = m.ReceivedAtUtc,
+                }
+                : m)
+            .Concat(arrived)
+            .ToList();
+        if (arrived.Count > 0)
+            await SendAsync($"* {_messages.Count} EXISTS", ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Brings the selected mailbox up to date with the store and tells the client: <c>* n EXPUNGE</c> for
+    /// messages removed elsewhere, <c>* n EXISTS</c> for new ones. Returns <c>false</c> after sending BYE when
+    /// the mailbox itself was deleted (RFC 2180 §3 permits closing the session).
+    /// </summary>
+    /// <remarks>
+    /// Relies on the store's invariant that message ids (UIDs) are never reused (see SqliteMailStore schema
+    /// and ResetAsync): a deleted and recreated mailbox can therefore never show an old UID with new content.
+    /// </remarks>
+    private bool NeedsSync(string command) => command switch
+    {
+        "NOOP" or "CHECK" or "EXPUNGE" => true,
+        "UID" => System.Diagnostics.Stopwatch.GetElapsedTime(_lastSyncTimestamp) >= UidSyncInterval,
+        _ => false,
+    };
+
+    private async Task<bool> SyncSelectedAsync(CancellationToken ct)
+    {
+        if (_selected is null)
+            return true;
+        _lastSyncTimestamp = System.Diagnostics.Stopwatch.GetTimestamp();
+
+        if (await _store.GetMailboxByIdAsync(_selected.Id, ct).ConfigureAwait(false) is null)
+        {
+            _eventLog.Info("Imap", "Selected mailbox was deleted; closing the session.");
+            await SendAsync("* BYE Mailbox was deleted", ct).ConfigureAwait(false);
+            return false;
+        }
+
+        var latest = await _store.GetMailboxMessagesAsync(_selected.Id, ct).ConfigureAwait(false);
+        var present = latest.Select(m => m.Uid).ToHashSet();
+        var removed = _messages.Where(m => !present.Contains(m.Uid)).Select(m => m.Uid).ToHashSet();
+        await SendExpungesAsync(removed, ct).ConfigureAwait(false);
+
+        if (latest.Count != _messages.Count)
+            await SendAsync($"* {latest.Count} EXISTS", ct).ConfigureAwait(false);
+        _messages = latest;
+        return true;
+    }
+
+    /// <summary>
+    /// Sends <c>* n EXPUNGE</c> for each removed UID, highest sequence number first so the lower numbers stay
+    /// valid, then drops them from the session's view and renumbers.
+    /// </summary>
+    private async Task SendExpungesAsync(HashSet<long> removedUids, CancellationToken ct)
+    {
+        if (removedUids.Count == 0)
+            return;
+
+        foreach (var seq in _messages.Where(m => removedUids.Contains(m.Uid))
+                     .Select(m => m.SequenceNumber).OrderByDescending(seq => seq))
+            await SendAsync($"* {seq} EXPUNGE", ct).ConfigureAwait(false);
+
+        var sequence = 0;
+        _messages = _messages.Where(m => !removedUids.Contains(m.Uid))
+            .Select(m => new MailboxMessageInfo
+            {
+                SequenceNumber = ++sequence,
+                Uid = m.Uid,
+                IsDeleted = m.IsDeleted,
+                IsSeen = m.IsSeen,
+                Size = m.Size,
+                ReceivedAtUtc = m.ReceivedAtUtc,
+            })
+            .ToList();
     }
 
     private async Task<bool> RequireAuthAsync(string tag, CancellationToken ct)

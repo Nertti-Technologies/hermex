@@ -35,6 +35,12 @@ public sealed class ReceivedMessage
 
     /// <summary>The SMTP command/response transcript of the delivering session, if captured.</summary>
     public string? Transcript { get; init; }
+
+    /// <summary>
+    /// Uploaded as an <c>.eml</c> file rather than received over SMTP (ADR-0003 D14). Imported mail is never relayed
+    /// automatically: its recipients come from headers that were never an SMTP envelope.
+    /// </summary>
+    internal bool Imported { get; init; }
 }
 
 /// <summary>Outcome of handing a <see cref="ReceivedMessage"/> to the ingestion pipeline.</summary>

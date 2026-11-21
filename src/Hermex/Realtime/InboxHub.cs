@@ -41,5 +41,7 @@ public sealed class InboxHub : Hub
         public const string InboxCleared = "inboxCleared";
         public const string StatsChanged = "statsChanged";
         public const string LogAdded = "logAdded";
+        public const string MailboxesChanged = "mailboxesChanged";
+        public const string MessagesChanged = "messagesChanged";
     }
 }

@@ -23,6 +23,25 @@ public interface IInboxNotifier
     /// <summary>Aggregate statistics changed.</summary>
     Task StatsChangedAsync(MailStats stats);
 
+    /// <summary>
+    /// Mailboxes were removed (a mailbox delete or a reset), together with the listed messages. Added in 2.3.0.
+    /// </summary>
+    Task MailboxesChangedAsync(IReadOnlyList<long> deletedMessageIds) => Task.CompletedTask;
+
+    /// <summary>
+    /// Several messages were deleted or changed read state at once. Added in 2.3.0; the default implementation
+    /// raises <see cref="MessageDeletedAsync"/> and <see cref="MessageUpdatedAsync"/> per message, so a notifier
+    /// written for 2.2 still hears about every change.
+    /// </summary>
+    async Task MessagesChangedAsync(IReadOnlyList<long> deletedIds, IReadOnlyList<long> updatedIds, bool? isRead)
+    {
+        foreach (var id in deletedIds)
+            await MessageDeletedAsync(id).ConfigureAwait(false);
+        if (isRead is { } read)
+            foreach (var id in updatedIds)
+                await MessageUpdatedAsync(id, read).ConfigureAwait(false);
+    }
+
     /// <summary>A diagnostic log entry was recorded.</summary>
     Task LogAddedAsync(HermexLogEntry entry);
 }
@@ -56,6 +75,12 @@ internal sealed class InboxNotifier : IInboxNotifier
 
     public Task StatsChangedAsync(MailStats stats) =>
         SafeSendAsync(InboxHub.Events.StatsChanged, stats);
+
+    public Task MessagesChangedAsync(IReadOnlyList<long> deletedIds, IReadOnlyList<long> updatedIds, bool? isRead) =>
+        SafeSendAsync(InboxHub.Events.MessagesChanged, new { deletedIds, updatedIds, isRead });
+
+    public Task MailboxesChangedAsync(IReadOnlyList<long> deletedMessageIds) =>
+        SafeSendAsync(InboxHub.Events.MailboxesChanged, new { deletedMessageIds });
 
     // Logs are Admin-tier data: only the hub's logs group receives them (see InboxHub.LogsGroup).
     public Task LogAddedAsync(HermexLogEntry entry) =>

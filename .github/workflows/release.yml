@@ -1,6 +1,6 @@
 name: Release
 
-# Publishes Hermex when a version tag is pushed, e.g.:
+# Publishes Hermex and Hermex.Testing (same version) when a version tag is pushed, e.g.:
 #   git tag v2.1.0 && git push origin v2.1.0
 #
 # Two jobs, so build and test code never runs with publishing rights:
@@ -74,11 +74,17 @@ jobs:
       - name: Test
         run: dotnet test tests/Hermex.Tests/Hermex.Tests.csproj -c Release
 
+      # Both packages ship from one tag with one version (ADR-0003 D7). The publish job pushes
+      # every .nupkg in the artifact, so adding a package here is all it needs.
       - name: Pack
-        run: >
-          dotnet pack src/Hermex/Hermex.csproj -c Release -o ./artifacts
-          /p:Version=${{ steps.version.outputs.value }}
-          /p:ContinuousIntegrationBuild=true
+        run: |
+          for project in src/Hermex/Hermex.csproj src/Hermex.Testing/Hermex.Testing.csproj; do
+            dotnet pack "$project" -c Release -o ./artifacts \
+              /p:Version=${{ steps.version.outputs.value }} \
+              /p:ContinuousIntegrationBuild=true
+          done
+          count="$(find ./artifacts -name '*.nupkg' ! -name '*.symbols.nupkg' | wc -l)"
+          if [ "$count" -ne 2 ]; then echo "::error::expected 2 packages, found $count"; exit 1; fi
 
       - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:

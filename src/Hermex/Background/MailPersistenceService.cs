@@ -24,6 +24,8 @@ internal sealed class MailPersistenceService : BackgroundService
     private const long DroppedEventWarningInterval = 1_000;
 
     private readonly MailWriteQueue _queue;
+    private readonly MessageArrivals _arrivals;
+    private readonly WebhookService _webhooks;
     private readonly IMailStore _store;
     private readonly IInboxNotifier _notifier;
     private readonly IMailRelayService _relay;
@@ -46,8 +48,12 @@ internal sealed class MailPersistenceService : BackgroundService
         IHermexEventLog eventLog,
         HermexOptions options,
         HermexEventDispatcher events,
+        MessageArrivals arrivals,
+        WebhookService webhooks,
         ILogger<MailPersistenceService> logger)
     {
+        _webhooks = webhooks;
+        _arrivals = arrivals;
         _queue = queue;
         _store = store;
         _notifier = notifier;
@@ -109,7 +115,10 @@ internal sealed class MailPersistenceService : BackgroundService
         }
         catch (OperationCanceledException) { /* shutting down */ }
 
-        // Flush whatever is still queued so nothing is lost on shutdown.
+        // Flush whatever is still queued so nothing is lost on shutdown. The SMTP listener has already stopped
+        // accepting connections (it is registered after this service, so it stops first; see
+        // HermexServiceCollectionExtensions). Sessions in progress are not awaited, so one can still submit
+        // after this flush.
         var remaining = new List<ReceivedMessage>();
         while (reader.TryRead(out var message))
             remaining.Add(message);
@@ -123,6 +132,7 @@ internal sealed class MailPersistenceService : BackgroundService
     private async Task PersistMessageBatchAsync(List<ReceivedMessage> batch, CancellationToken cancellationToken)
     {
         var records = new List<MessageRecord>(batch.Count);
+        var addresses = new List<(string[] To, string[] Cc)>(batch.Count); // for webhook notices (ADR-0003 D4)
 
         foreach (var received in batch)
         {
@@ -140,6 +150,7 @@ internal sealed class MailPersistenceService : BackgroundService
             }
 
             records.Add(BuildRecord(received, mime));
+            addresses.Add((mime.To.Select(a => a.Address).ToArray(), mime.Cc.Select(a => a.Address).ToArray()));
         }
 
         try
@@ -152,6 +163,11 @@ internal sealed class MailPersistenceService : BackgroundService
             _eventLog.Error("Storage", $"Failed to persist {records.Count} message(s): {ex.Message}");
             return;
         }
+
+        // Committed: wake wait-API callers (ADR-0003 D6) before the slower dashboard notifications.
+        _arrivals.Pulse();
+        for (var i = 0; i < records.Count; i++)
+            _webhooks.Enqueue(records[i], addresses[i].To, addresses[i].Cc); // never blocks capture
 
         foreach (var record in records)
             await _notifier.MessageReceivedAsync(ToSummary(record)).ConfigureAwait(false);
@@ -170,11 +186,14 @@ internal sealed class MailPersistenceService : BackgroundService
             QueueStoredEvent(record, cancellationToken);
 
         // Automatic relay runs off the persistence path; RelayAsync logs its own failures.
+        // Imported files are never relayed automatically (ADR-0003 D14); records match the batch by index.
         if (_options.Relay is { Enabled: true, AutomaticRelay: true })
         {
-            foreach (var record in records)
+            for (var i = 0; i < records.Count; i++)
             {
-                var id = record.Id;
+                if (batch[i].Imported)
+                    continue;
+                var id = records[i].Id;
                 _ = _relay.RelayAsync(id, automatic: true, CancellationToken.None);
             }
         }
@@ -252,7 +271,7 @@ internal sealed class MailPersistenceService : BackgroundService
             : mime.From?.Address ?? received.MailFrom;
 
         var toDisplay = mime.To.Count > 0
-            ? string.Join(", ", mime.To.Select(a => a.ToString()))
+            ? MimeAddress.FormatList(mime.To)
             : string.Join(", ", received.Recipients);
 
         return new MessageRecord
@@ -264,6 +283,7 @@ internal sealed class MailPersistenceService : BackgroundService
             FromAddress = mime.From?.Address ?? received.MailFrom,
             FromDisplay = string.IsNullOrWhiteSpace(fromDisplay) ? "(unknown sender)" : fromDisplay,
             ToDisplay = toDisplay,
+            CcDisplay = mime.Cc.Count > 0 ? MimeAddress.FormatList(mime.Cc) : null,
             Subject = string.IsNullOrEmpty(mime.Subject) ? "(no subject)" : mime.Subject!,
             HasHtml = mime.HasHtmlBody,
             HasText = mime.HasTextBody,

@@ -226,6 +226,7 @@ public sealed class EventHookTests
         var id = await host.SeedMessageAsync();
 
         using var request = new HttpRequestMessage(HttpMethod.Post, $"/hermex/api/messages/{id}/relay");
+        request.Headers.Add(Hermex.Internal.HermexRoutes.RequestHeader, "1"); // required even without authorization
         using var response = await host.Client.SendAsync(request);
 
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);

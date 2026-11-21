@@ -24,6 +24,10 @@ public sealed class MimeAddress
     public override string ToString() =>
         HasDisplayName ? $"{DisplayName} <{Address}>" : Address;
 
+    /// <summary>Formats an address list for display ("Name &lt;a@b&gt;, c@d"); empty when there are none.</summary>
+    public static string FormatList(IReadOnlyList<MimeAddress> addresses) =>
+        addresses.Count == 0 ? string.Empty : string.Join(", ", addresses.Select(a => a.ToString()));
+
     /// <summary>Parses a single address; returns the first address of a list, or <c>null</c>.</summary>
     public static MimeAddress? ParseSingle(string? headerValue)
     {

@@ -1,3 +1,9 @@
+using Hermex.Diagnostics;
+using Hermex.Background;
+using Microsoft.Data.Sqlite;
+using System.Globalization;
+using System.Text.RegularExpressions;
+using Hermex.Analysis;
 using Hermex.Configuration;
 using Hermex.Internal;
 using Hermex.Realtime;
@@ -21,6 +27,15 @@ internal static class HermexApiEndpoints
         if (authorization.IsEnabled)
             api.AddEndpointFilter(HermexEndpointAuthorization.RequireRequestHeader);
 
+        // Routes a cross-site page could otherwise trigger without a preflight (no body, or a multipart body)
+        // and that change state: they need the request header even without authorization. With authorization
+        // the group filter above already applies.
+        void RequireHeaderWithoutAuthorization(RouteHandlerBuilder route)
+        {
+            if (!authorization.IsEnabled)
+                route.AddEndpointFilter(HermexEndpointAuthorization.RequireRequestHeader);
+        }
+
         const HermexEndpointTier Viewer = HermexEndpointTier.Viewer;
         const HermexEndpointTier Manager = HermexEndpointTier.Manager;
         const HermexEndpointTier Admin = HermexEndpointTier.Admin;
@@ -30,6 +45,10 @@ internal static class HermexApiEndpoints
             int? page, int? pageSize, string? search, bool? unread, long? mailbox,
             IMailStore store, HermexOptions options) =>
         {
+            // Validate at the boundary instead of letting the parser cut a long query mid-term.
+            if (search?.Length > MessageSearch.MaxQueryLength)
+                return Results.BadRequest(new { error = $"Search is limited to {MessageSearch.MaxQueryLength} characters." });
+
             var result = await store.GetMessagesAsync(new MessageQuery
             {
                 Page = page ?? 1,
@@ -39,6 +58,57 @@ internal static class HermexApiEndpoints
                 MailboxId = mailbox,
             });
             return Results.Json(result);
+        }).WithHermexTier(Viewer, authorization);
+
+        // ---- wait for a message (ADR-0003 D6) ------------------------------
+        api.MapGet("/messages/wait", async (
+            string? to, string? from, string? subject, string? mailbox, long? after, int? timeout,
+            IMailStore store, MessageArrivals arrivals, HttpContext http) =>
+        {
+            var seconds = timeout ?? WaitRequest.DefaultTimeoutSeconds;
+            if (seconds is < 1 or > WaitRequest.MaxTimeoutSeconds)
+                return Results.BadRequest(new { error = $"timeout must be 1 to {WaitRequest.MaxTimeoutSeconds} seconds." });
+            if (after < 0)
+                return Results.BadRequest(new { error = "after must not be negative." });
+            if (WaitRequest.BuildCriteria(("to", to), ("from", from), ("subject", subject), ("mailbox", mailbox)) is not { } criteria)
+                return Results.BadRequest(new { error = WaitRequest.InvalidValue });
+            if (store is not IWaitQueryStore)
+                return Results.Json(new { error = "The configured mail store does not support waiting for messages." },
+                    statusCode: StatusCodes.Status501NotImplemented);
+
+            if (!arrivals.TryEnter())
+                return Results.StatusCode(StatusCodes.Status429TooManyRequests);
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(http.RequestAborted);
+            try
+            {
+                deadline.CancelAfter(TimeSpan.FromSeconds(seconds));
+                var ct = deadline.Token;
+
+                // Default cursor: the newest id now, so mail stored before this request never matches.
+                var cursor = after
+                    ?? ((await store.GetMessagesAsync(new MessageQuery { PageSize = 1, SkipCount = true }, ct)).Items is [var newest, ..]
+                        ? newest.Id : 0);
+                var query = new MessageQuery { Criteria = criteria, AfterId = cursor, OldestFirst = true, PageSize = 1, SkipCount = true };
+                http.Response.Headers[HermexRoutes.CursorHeader] = cursor.ToString(CultureInfo.InvariantCulture);
+
+                while (true)
+                {
+                    var signal = arrivals.Next; // before the check, so nothing stored in between is missed
+                    if ((await store.GetMessagesAsync(query, ct)).Items is [var match, ..])
+                        return Results.Json(match);
+                    await signal.WaitAsync(ct);
+                }
+            }
+            catch (Exception ex) when (ex is OperationCanceledException || (ex is SqliteException && deadline.IsCancellationRequested))
+            {
+                // Timed out (or the client left, in which case nobody reads it). A deadline that interrupts a
+                // running SQLite statement surfaces as SqliteException (SQLITE_INTERRUPT), not cancellation.
+                return Results.NoContent();
+            }
+            finally
+            {
+                arrivals.Exit();
+            }
         }).WithHermexTier(Viewer, authorization);
 
         // ---- mailboxes -----------------------------------------------------
@@ -75,7 +145,37 @@ internal static class HermexApiEndpoints
             // images and styles still load, so the preview looks the same.
             response.Headers.ContentSecurityPolicy = "sandbox";
             response.Headers.XContentTypeOptions = "nosniff";
-            return Results.Content(RewriteCidLinks(id, detail), "text/html; charset=utf-8");
+            var html = RewriteCidLinks(id, detail);
+            try
+            {
+                html = HtmlChecks.StripBaseAndRefresh(html);
+            }
+            catch (RegexMatchTimeoutException)
+            {
+                // Preview fidelity only (ADR-0003 D8); the CSP sandbox above still applies.
+            }
+            return Results.Content(html, "text/html; charset=utf-8");
+        }).WithHermexTier(Viewer, authorization);
+
+        // ---- HTML checks and authentication headers (ADR-0003 D5, D13); read-only, not stored ----
+        api.MapGet("/messages/{id:long}/checks", async (long id, IMailStore store, CancellationToken ct) =>
+        {
+            var detail = await store.GetMessageAsync(id, ct);
+            if (detail is null)
+                return Results.NotFound();
+
+            try
+            {
+                return Results.Json(new
+                {
+                    html = HtmlChecks.Run(detail.HtmlBody, detail.TextBody is not null, detail.Headers),
+                    authentication = AuthenticationHeaders.Parse(detail.Headers),
+                });
+            }
+            catch (RegexMatchTimeoutException)
+            {
+                return Results.Problem("The checks took too long on this message.", statusCode: StatusCodes.Status503ServiceUnavailable);
+            }
         }).WithHermexTier(Viewer, authorization);
 
         // ---- raw .eml download --------------------------------------------
@@ -105,7 +205,7 @@ internal static class HermexApiEndpoints
         }).WithHermexTier(Viewer, authorization);
 
         // ---- mark read / unread -------------------------------------------
-        api.MapPost("/messages/{id:long}/read", async (long id, bool? isRead, IMailStore store, IInboxNotifier notifier) =>
+        var markRead = api.MapPost("/messages/{id:long}/read", async (long id, bool? isRead, IMailStore store, IInboxNotifier notifier) =>
         {
             var target = isRead ?? true;
             if (!await store.SetReadAsync(id, target))
@@ -113,9 +213,10 @@ internal static class HermexApiEndpoints
             await notifier.MessageUpdatedAsync(id, target);
             return Results.Ok(new { id, isRead = target });
         }).WithHermexTier(Viewer, authorization);
+        RequireHeaderWithoutAuthorization(markRead);
 
         // ---- relay a message to the configured upstream SMTP server -------
-        api.MapPost("/messages/{id:long}/relay", async (long id, IMailRelayService relay) =>
+        var relayRoute = api.MapPost("/messages/{id:long}/relay", async (long id, IMailRelayService relay) =>
         {
             if (!relay.IsEnabled)
                 return Results.BadRequest(new { error = "Relay is not enabled." });
@@ -127,6 +228,8 @@ internal static class HermexApiEndpoints
                 ? Forbidden(result.Error)
                 : Results.Problem(result.Error ?? "Relay failed.");
         }).WithHermexTier(Manager, authorization);
+        // Relay sends captured mail off this machine: never on a cross-site request (owner decision 2026-11-21).
+        RequireHeaderWithoutAuthorization(relayRoute);
 
         // ---- delete a single message --------------------------------------
         api.MapDelete("/messages/{id:long}", async (long id, IMailStore store, IInboxNotifier notifier,
@@ -135,6 +238,7 @@ internal static class HermexApiEndpoints
             var deleting = new HermexDeletingContext
             {
                 MessageId = id,
+                Scope = HermexDeleteScope.Message,
                 HttpContext = events.HttpContext,
                 CancellationToken = events.HttpContext?.RequestAborted ?? CancellationToken.None,
             };
@@ -148,12 +252,62 @@ internal static class HermexApiEndpoints
             return Results.Ok(new { id });
         }).WithHermexTier(Manager, authorization);
 
+        // .eml import (ADR-0003 D14): through the SMTP write queue; never relayed automatically. The request
+        // header is required even without authorization (with it, the api group already requires it): a
+        // cross-site page can post a multipart form without a preflight, and this route stores what it is given.
+        var import = api.MapPost("/messages/import", (HttpRequest request, IReceivedMailSink sink, HermexOptions options,
+            HermexEventDispatcher events, IHermexEventLog eventLog, CancellationToken ct) =>
+                EmlImport.HandleAsync(request, sink, options, events, eventLog, ct))
+            .WithHermexTier(Manager, authorization);
+        RequireHeaderWithoutAuthorization(import);
+
+        // ---- bulk delete / mark read --------------------------------------
+        // Separate routes so each carries one tier. An empty or oversized id list is a 400, never "all".
+        api.MapPost("/messages/bulk-delete", async (BulkRequest? request, IMailStore store,
+            IInboxNotifier notifier, HermexEventDispatcher events, CancellationToken ct) =>
+        {
+            if (BulkRequest.Validate(request) is { } invalid)
+                return invalid;
+            var ids = request!.Ids!;
+
+            var deleting = new HermexDeletingContext
+            {
+                Scope = HermexDeleteScope.Messages,
+                MessageIds = ids,
+                // A 2.2 hook that protects messages by MessageId still sees a one-message selection.
+                MessageId = ids.Count == 1 ? ids[0] : null,
+                HttpContext = events.HttpContext,
+                CancellationToken = ct,
+            };
+            if (!await events.DeletingAsync(deleting))
+                return Forbidden(deleting.RejectionReason);
+
+            var deleted = await store.DeleteMessagesAsync(ids, ct);
+            await notifier.MessagesChangedAsync(deleted, Array.Empty<long>(), null);
+            await notifier.StatsChangedAsync(await store.GetStatsAsync(CancellationToken.None)); // committed: always broadcast
+            return Results.Ok(new { deleted });
+        }).WithHermexTier(Manager, authorization);
+
+        api.MapPost("/messages/bulk-read", async (BulkRequest? request, IMailStore store,
+            IInboxNotifier notifier, CancellationToken ct) =>
+        {
+            if (BulkRequest.Validate(request) is { } invalid)
+                return invalid;
+
+            var isRead = request!.IsRead ?? true;
+            var updated = await store.SetReadAsync(request.Ids!, isRead, ct);
+            await notifier.MessagesChangedAsync(Array.Empty<long>(), updated, isRead);
+            await notifier.StatsChangedAsync(await store.GetStatsAsync(CancellationToken.None)); // committed: always broadcast
+            return Results.Ok(new { updated, isRead });
+        }).WithHermexTier(Viewer, authorization);
+
         // ---- clear the whole inbox ----------------------------------------
         api.MapDelete("/messages", async (IMailStore store, IInboxNotifier notifier, HermexEventDispatcher events) =>
         {
             var deleting = new HermexDeletingContext
             {
                 MessageId = null,
+                Scope = HermexDeleteScope.All,
                 HttpContext = events.HttpContext,
                 CancellationToken = events.HttpContext?.RequestAborted ?? CancellationToken.None,
             };
@@ -165,6 +319,83 @@ internal static class HermexApiEndpoints
             await notifier.StatsChangedAsync(await store.GetStatsAsync());
             return Results.Ok(new { cleared });
         }).WithHermexTier(Manager, authorization);
+
+        // ---- delete one mailbox (messages other mailboxes share are kept) -
+        api.MapDelete("/mailboxes/{id:long}", async (long id, IMailStore store, IInboxNotifier notifier,
+            HermexEventDispatcher events, CancellationToken ct) =>
+        {
+            var mailbox = await store.GetMailboxByIdAsync(id, ct);
+            if (mailbox is null)
+                return Results.NotFound();
+            if (string.Equals(mailbox.Address, SqliteMailStore.InboxMailboxName, StringComparison.OrdinalIgnoreCase))
+                return Results.BadRequest(new { error = "INBOX cannot be deleted. Use Delete all instead." });
+
+            var deleting = new HermexDeletingContext
+            {
+                Scope = HermexDeleteScope.Mailbox,
+                MailboxAddress = mailbox.Address,
+                HttpContext = events.HttpContext,
+                CancellationToken = ct,
+            };
+            if (!await events.DeletingAsync(deleting))
+                return Forbidden(deleting.RejectionReason);
+
+            MailboxDeleteResult? result;
+            try
+            {
+                result = await store.DeleteMailboxAsync(id, ct);
+            }
+            catch (InvalidOperationException ex)
+            {
+                return Results.BadRequest(new { error = ex.Message });
+            }
+            catch (NotSupportedException ex)
+            {
+                return NotImplemented(ex.Message);
+            }
+            if (result is null)
+                return Results.NotFound();
+            await notifier.MailboxesChangedAsync(result.DeletedMessageIds);
+            await notifier.StatsChangedAsync(await store.GetStatsAsync(CancellationToken.None)); // committed: always broadcast
+            return Results.Ok(new { id, address = result.Address, messagesDeleted = result.DeletedMessageIds.Count });
+        }).WithHermexTier(Manager, authorization);
+
+        // ---- full reset: messages, mailboxes and logs (settings are kept) -
+        api.MapPost("/reset", async (ResetRequest? request, IMailStore store, IInboxNotifier notifier,
+            HermexEventDispatcher events, CancellationToken ct) =>
+        {
+            // Typed confirmation: a missing or unreadable body must never fall through to a reset.
+            if (request?.Confirm != ResetRequest.ConfirmationText)
+                return Results.BadRequest(new { error = $"Send {{\"confirm\":\"{ResetRequest.ConfirmationText}\"}} to reset." });
+
+            var deleting = new HermexDeletingContext
+            {
+                Scope = HermexDeleteScope.Reset,
+                HttpContext = events.HttpContext,
+                CancellationToken = ct,
+            };
+            if (!await events.DeletingAsync(deleting))
+                return Forbidden(deleting.RejectionReason);
+
+            StoreResetResult result;
+            try
+            {
+                result = await store.ResetAsync(ct);
+            }
+            catch (NotSupportedException ex)
+            {
+                return NotImplemented(ex.Message);
+            }
+            await notifier.InboxClearedAsync();
+            await notifier.MailboxesChangedAsync(Array.Empty<long>());
+            await notifier.StatsChangedAsync(await store.GetStatsAsync(CancellationToken.None)); // committed: always broadcast
+            return Results.Ok(new
+            {
+                messagesDeleted = result.MessagesDeleted,
+                mailboxesDeleted = result.MailboxesDeleted,
+                logsDeleted = result.LogsDeleted,
+            });
+        }).WithHermexTier(Admin, authorization);
 
         // ---- server status, statistics and effective options --------------
         api.MapGet("/status", async (HttpContext http, IMailStore store, HermexRuntimeState state,
@@ -214,6 +445,22 @@ internal static class HermexApiEndpoints
             });
         }).WithHermexTier(Viewer, authorization);
 
+        // ---- webhook deliveries (ADR-0003 D4); endpoints themselves are code-only ----
+        api.MapGet("/webhooks/deliveries", (WebhookService webhooks) => Results.Json(new
+        {
+            enabled = webhooks.Enabled,
+            dropped = webhooks.Dropped,
+            skipped = webhooks.Skipped,
+            endpoints = webhooks.Endpoints,
+            deliveries = webhooks.Deliveries,
+        })).WithHermexTier(Admin, authorization);
+
+        var resume = api.MapPost("/webhooks/{index:int}/resume", (int index, WebhookService webhooks) =>
+            webhooks.Resume(index) ? Results.Ok() : Results.NotFound()).WithHermexTier(Admin, authorization);
+        // No body, so without authorization a cross-site page could post it as a simple request; with
+        // authorization the api group already requires the header.
+        RequireHeaderWithoutAuthorization(resume);
+
         // ---- diagnostic logs ----------------------------------------------
         api.MapGet("/logs", async (int? limit, IMailStore store) =>
         {
@@ -225,6 +472,31 @@ internal static class HermexApiEndpoints
         {
             var cleared = await store.ClearLogsAsync();
             return Results.Ok(new { cleared });
+        }).WithHermexTier(Admin, authorization);
+
+        // ---- SMTP fault injection (ADR-0003 D11); in memory only ------------
+        api.MapGet("/faults", (FaultInjector faults) => Results.Json(faults.Current))
+            .WithHermexTier(Admin, authorization);
+
+        api.MapPut("/faults", async (FaultsUpdate update, FaultInjector faults, HermexEventDispatcher events,
+            CancellationToken ct) =>
+        {
+            switch (faults.Validate(update.Enabled, update.Rules))
+            {
+                case { Forbidden: true } refused: return Forbidden(refused.Error);
+                case { } invalid: return Results.BadRequest(new { error = invalid.Error });
+            }
+            var changing = new HermexFaultsChangingContext
+            {
+                Enabled = update.Enabled,
+                Rules = FaultInjector.CopyAll(update.Rules),
+                HttpContext = events.HttpContext,
+                CancellationToken = ct,
+            };
+            if (!await events.FaultsChangingAsync(changing))
+                return Forbidden(changing.RejectionReason);
+            faults.Apply(update.Enabled, update.Rules);
+            return Results.Ok(faults.Current);
         }).WithHermexTier(Admin, authorization);
 
         // ---- runtime-editable settings ------------------------------------
@@ -245,12 +517,78 @@ internal static class HermexApiEndpoints
         }).WithHermexTier(Admin, authorization);
     }
 
+    /// <summary>Body of <c>PUT /faults</c>: the switch and the full rule list, replacing the current ones.</summary>
+    internal sealed record FaultsUpdate(bool Enabled, List<HermexFaultRule>? Rules);
+
+    /// <summary>Body of <c>POST /reset</c>.</summary>
+    internal sealed record ResetRequest(string? Confirm)
+    {
+        /// <summary>
+        /// The word the caller must send. Pages/Settings.cshtml renders it into the page (data-confirm-word)
+        /// and settings.js sends what the page says, so this is the only place it is defined.
+        /// </summary>
+        public const string ConfirmationText = "RESET";
+    }
+
+    /// <summary>Body of the bulk routes.</summary>
+    internal sealed record BulkRequest(IReadOnlyList<long>? Ids, bool? IsRead)
+    {
+        /// <summary>Upper bound per request: the largest dashboard page (MessageQuery's page-size cap is 500).</summary>
+        public const int MaxIds = 500;
+
+        public static IResult? Validate(BulkRequest? request)
+        {
+            if (request?.Ids is not { Count: > 0 } ids)
+                return Results.BadRequest(new { error = "ids must list at least one message." });
+            if (ids.Count > MaxIds)
+                return Results.BadRequest(new { error = $"At most {MaxIds} ids per request." });
+            return null;
+        }
+    }
+
+    /// <summary>501 with a JSON reason, for a host-supplied store that lacks a 2.3.0 operation.</summary>
+    private static IResult NotImplemented(string reason) =>
+        Results.Json(new { error = reason }, statusCode: StatusCodes.Status501NotImplemented);
+
     /// <summary>403 with a JSON reason, for actions the host locked or a hook rejected.</summary>
     private static IResult Forbidden(string? reason) =>
         Results.Json(new { error = reason ?? "Forbidden by the host application." },
             statusCode: StatusCodes.Status403Forbidden);
 
     /// <summary>Rewrites <c>cid:</c> references in an HTML body to inline-attachment URLs.</summary>
+
+    /// <summary>Request rules for <c>GET /messages/wait</c> (ADR-0003 D6).</summary>
+    internal static class WaitRequest
+    {
+        /// <summary>Default wait (ADR-0003 D6).</summary>
+        public const int DefaultTimeoutSeconds = 30;
+
+        /// <summary>Longest wait per request (estimate, from a vendor's documented 120,000 ms maximum).
+        /// The Hermex.Testing client splits longer waits into several requests.</summary>
+        public const int MaxTimeoutSeconds = 120;
+
+        /// <summary>Longest criterion value (estimate: longer than any address or subject a test matches on).</summary>
+        public const int MaxValueLength = 200;
+
+        public const string InvalidValue =
+            "to, from, subject and mailbox are limited to 200 characters each and must not contain control characters.";
+
+        /// <summary>The criteria that are set, matched like the search operators (ADR-0003 D9), or null when a value is invalid.</summary>
+        public static List<(string Operator, string Value)>? BuildCriteria(params (string Operator, string? Value)[] criteria)
+        {
+            var terms = new List<(string, string)>();
+            foreach (var (op, value) in criteria)
+            {
+                if (string.IsNullOrEmpty(value))
+                    continue;
+                if (value.Length > MaxValueLength || value.Any(char.IsControl))
+                    return null;
+                terms.Add((op, value));
+            }
+            return terms;
+        }
+    }
+
     private static string RewriteCidLinks(long messageId, MessageDetail detail)
     {
         var html = detail.HtmlBody ?? string.Empty;

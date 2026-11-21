@@ -30,8 +30,54 @@ public interface IMailStore
     /// <summary>Deletes a single message. Returns <c>false</c> when the message is missing.</summary>
     Task<bool> DeleteMessageAsync(long id, CancellationToken cancellationToken = default);
 
+    /// <summary>Deletes the listed messages; returns the ids that existed and were removed.</summary>
+    /// <remarks>Added in 2.3.0. The default implementation deletes one at a time and is therefore not atomic.</remarks>
+    async Task<IReadOnlyList<long>> DeleteMessagesAsync(IReadOnlyList<long> ids,
+        CancellationToken cancellationToken = default)
+    {
+        var deleted = new List<long>();
+        foreach (var id in ids)
+            if (await DeleteMessageAsync(id, cancellationToken).ConfigureAwait(false))
+                deleted.Add(id);
+        return deleted;
+    }
+
+    /// <summary>Marks the listed messages read or unread; returns the ids that exist.</summary>
+    /// <remarks>Added in 2.3.0. The default implementation updates one at a time and is therefore not atomic.</remarks>
+    async Task<IReadOnlyList<long>> SetReadAsync(IReadOnlyList<long> ids, bool isRead,
+        CancellationToken cancellationToken = default)
+    {
+        var updated = new List<long>();
+        foreach (var id in ids)
+            if (await SetReadAsync(id, isRead, cancellationToken).ConfigureAwait(false))
+                updated.Add(id);
+        return updated;
+    }
+
     /// <summary>Deletes every message; returns the number removed.</summary>
     Task<int> ClearMessagesAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Deletes a mailbox and the messages no other mailbox (except INBOX) holds; shared messages stay.
+    /// Returns <c>null</c> when the mailbox is missing. INBOX cannot be deleted
+    /// (<see cref="InvalidOperationException"/>).
+    /// </summary>
+    /// <remarks>Added in 2.3.0; the default implementation throws <see cref="NotSupportedException"/>.</remarks>
+    Task<MailboxDeleteResult?> DeleteMailboxAsync(long mailboxId, CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("This mail store does not support deleting mailboxes.");
+
+    /// <summary>
+    /// Deletes every message, every mailbox except INBOX and every diagnostic log entry, in one transaction.
+    /// Runtime settings are kept.
+    /// </summary>
+    /// <remarks>Added in 2.3.0; the default implementation throws <see cref="NotSupportedException"/>.</remarks>
+    Task<StoreResetResult> ResetAsync(CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("This mail store does not support a reset.");
+
+    /// <summary>Returns a mailbox by id, or <c>null</c>.</summary>
+    /// <remarks>Added in 2.3.0; the default implementation searches <see cref="GetMailboxesAsync"/>.</remarks>
+    async Task<Mailbox?> GetMailboxByIdAsync(long mailboxId, CancellationToken cancellationToken = default) =>
+        (await GetMailboxesAsync(cancellationToken).ConfigureAwait(false)).FirstOrDefault(m => m.Id == mailboxId);
 
     /// <summary>Returns aggregate statistics.</summary>
     Task<MailStats> GetStatsAsync(CancellationToken cancellationToken = default);

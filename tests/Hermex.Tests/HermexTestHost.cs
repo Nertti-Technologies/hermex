@@ -90,9 +90,9 @@ internal sealed class HermexTestHost : IAsyncDisposable
     }
 
     /// <summary>Stores a message directly, bypassing SMTP, and returns its id.</summary>
-    public async Task<long> SeedMessageAsync()
+    public async Task<long> SeedMessageAsync(string? rawText = null)
     {
-        var raw = TestSupport.Raw("From: sender@example.test\nTo: recipient@example.test\nSubject: Seeded\n\nBody\n");
+        var raw = TestSupport.Raw(rawText ?? "From: sender@example.test\nTo: recipient@example.test\nSubject: Seeded\n\nBody\n");
         var record = new MessageRecord
         {
             SessionId = "test",

@@ -1,6 +1,7 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/Hermex/Hermex.csproj" />
+    <Project Path="src/Hermex.Testing/Hermex.Testing.csproj" />
   </Folder>
   <Folder Name="/samples/">
     <Project Path="samples/Hermex.Sample.Web/Hermex.Sample.Web.csproj" />

@@ -45,6 +45,24 @@ public class HermexEvents
     /// </summary>
     public Func<HermexDeletingContext, Task> OnDeleting { get; set; } = _ => Task.CompletedTask;
 
+    /// <summary>
+    /// Veto hook: before each webhook delivery attempt (ADR-0003 D4). Can reject the attempt (it is then not
+    /// retried) or add request headers, for example for an audit trail or a receiver's own token.
+    /// </summary>
+    public Func<HermexWebhookSendingContext, Task> OnWebhookSending { get; set; } = _ => Task.CompletedTask;
+
+    /// <summary>
+    /// Veto hook: before SMTP fault rules are changed from the dashboard or API (ADR-0003 D11). Use it to audit who
+    /// changed them (<see cref="HermexVetoContext.HttpContext"/>) or to refuse the change.
+    /// </summary>
+    public Func<HermexFaultsChangingContext, Task> OnFaultsChanging { get; set; } = _ => Task.CompletedTask;
+
+    /// <summary>
+    /// Veto hook: before uploaded <c>.eml</c> files are imported (ADR-0003 D14). Use it to audit who imported
+    /// (<see cref="HermexVetoContext.HttpContext"/>) or to refuse the import.
+    /// </summary>
+    public Func<HermexImportingContext, Task> OnImporting { get; set; } = _ => Task.CompletedTask;
+
     /// <summary>Notification hook: after settings were applied.</summary>
     public Func<HermexSettingsChangedContext, Task> OnSettingsChanged { get; set; } = _ => Task.CompletedTask;
 
@@ -63,6 +81,15 @@ public class HermexEvents
 
     /// <summary>Invokes <see cref="OnDeleting"/>.</summary>
     public virtual Task Deleting(HermexDeletingContext context) => OnDeleting(context);
+
+    /// <summary>Invokes <see cref="OnWebhookSending"/>.</summary>
+    public virtual Task WebhookSending(HermexWebhookSendingContext context) => OnWebhookSending(context);
+
+    /// <summary>Runs <see cref="OnImporting"/>; override in a subclass registered as a service.</summary>
+    public virtual Task Importing(HermexImportingContext context) => OnImporting(context);
+
+    /// <summary>Runs <see cref="OnFaultsChanging"/>; override in a subclass registered as a service.</summary>
+    public virtual Task FaultsChanging(HermexFaultsChangingContext context) => OnFaultsChanging(context);
 
     /// <summary>Invokes <see cref="OnSettingsChanged"/>.</summary>
     public virtual Task SettingsChanged(HermexSettingsChangedContext context) => OnSettingsChanged(context);
@@ -92,6 +119,26 @@ public abstract class HermexVetoContext
         IsRejected = true;
         RejectionReason = string.IsNullOrWhiteSpace(reason) ? "Rejected by the host application." : reason;
     }
+}
+
+/// <summary>Context for <see cref="HermexEvents.OnImporting"/>: the upload about to be imported.</summary>
+public sealed class HermexImportingContext : HermexVetoContext
+{
+    /// <summary>Non-empty files that will be imported.</summary>
+    public required int FileCount { get; init; }
+
+    /// <summary>Their total size in bytes.</summary>
+    public required long TotalBytes { get; init; }
+}
+
+/// <summary>Context for <see cref="HermexEvents.OnFaultsChanging"/>: the switch and rules about to replace the current ones.</summary>
+public sealed class HermexFaultsChangingContext : HermexVetoContext
+{
+    /// <summary>Whether fault injection will be on.</summary>
+    public required bool Enabled { get; init; }
+
+    /// <summary>The rules that will apply (copies; changing them has no effect).</summary>
+    public required IReadOnlyList<HermexFaultRule> Rules { get; init; }
 }
 
 /// <summary>Context for <see cref="HermexEvents.OnSettingsChanging"/>.</summary>
@@ -129,11 +176,83 @@ public sealed class HermexRelayingContext : HermexVetoContext
     public required bool Automatic { get; init; }
 }
 
+/// <summary>Context for <see cref="HermexEvents.OnWebhookSending"/>.</summary>
+public sealed class HermexWebhookSendingContext : HermexVetoContext
+{
+    /// <summary>The endpoint's position in <see cref="HermexWebhookOptions.Endpoints"/>.</summary>
+    public required int EndpointIndex { get; init; }
+
+    /// <summary>The endpoint URL.</summary>
+    public required Uri Url { get; init; }
+
+    /// <summary>The notice id (<c>webhook-id</c>), the same on every attempt.</summary>
+    public required string WebhookId { get; init; }
+
+    /// <summary>The stored message the notice is about.</summary>
+    public required long MessageId { get; init; }
+
+    /// <summary>1 for the first attempt.</summary>
+    public required int Attempt { get; init; }
+
+    /// <summary>
+    /// Extra request headers to send. Names must be valid header tokens and must not be <c>webhook-*</c>,
+    /// <c>Content-Type</c> or <c>Host</c>; values must not contain line breaks. Invalid entries reject the attempt.
+    /// </summary>
+    public IDictionary<string, string> Headers { get; } = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+}
+
 /// <summary>Context for <see cref="HermexEvents.OnDeleting"/>.</summary>
 public sealed class HermexDeletingContext : HermexVetoContext
 {
-    /// <summary>The message being deleted, or <c>null</c> when the whole inbox is being cleared.</summary>
+    /// <summary>
+    /// The message being deleted when <see cref="Scope"/> is <see cref="HermexDeleteScope.Message"/>, and the one
+    /// selected message of a one-item <see cref="HermexDeleteScope.Messages"/> delete (for hooks written for 2.2);
+    /// otherwise <c>null</c> (as for clearing every message in 2.1).
+    /// </summary>
     public long? MessageId { get; init; }
+
+    /// <summary>
+    /// What is being deleted. Added in 2.3.0. When not set it is inferred: <see cref="HermexDeleteScope.Mailbox"/>
+    /// with a <see cref="MailboxAddress"/>, <see cref="HermexDeleteScope.Messages"/> with <see cref="MessageIds"/>,
+    /// otherwise the 2.2 meaning of <see cref="MessageId"/> (<see cref="HermexDeleteScope.Message"/> with an id,
+    /// <see cref="HermexDeleteScope.All"/> without), so code written for 2.2 still compiles and means the same. Hooks should switch on this rather than on
+    /// <see cref="MessageId"/>: a bulk delete lists its messages in <see cref="MessageIds"/>, and a mailbox delete
+    /// or a reset removes messages without listing them.
+    /// </summary>
+    public HermexDeleteScope Scope
+    {
+        get => _scope ?? (MailboxAddress is not null ? HermexDeleteScope.Mailbox
+            : MessageIds.Count > 0 ? HermexDeleteScope.Messages
+            : MessageId is null ? HermexDeleteScope.All : HermexDeleteScope.Message);
+        init => _scope = value;
+    }
+
+    private readonly HermexDeleteScope? _scope;
+
+    /// <summary>The messages being deleted when <see cref="Scope"/> is <see cref="HermexDeleteScope.Messages"/>.</summary>
+    public IReadOnlyList<long> MessageIds { get; init; } = Array.Empty<long>();
+
+    /// <summary>The mailbox being deleted when <see cref="Scope"/> is <see cref="HermexDeleteScope.Mailbox"/>.</summary>
+    public string? MailboxAddress { get; init; }
+}
+
+/// <summary>What a <see cref="HermexDeletingContext"/> deletes.</summary>
+public enum HermexDeleteScope
+{
+    /// <summary>One message (<see cref="HermexDeletingContext.MessageId"/>).</summary>
+    Message,
+
+    /// <summary>A selection of messages (<see cref="HermexDeletingContext.MessageIds"/>).</summary>
+    Messages,
+
+    /// <summary>One mailbox and the messages only it holds (<see cref="HermexDeletingContext.MailboxAddress"/>).</summary>
+    Mailbox,
+
+    /// <summary>Every message in every mailbox.</summary>
+    All,
+
+    /// <summary>Every message, mailbox and diagnostic log entry; settings are kept.</summary>
+    Reset,
 }
 
 /// <summary>Context for <see cref="HermexEvents.OnSettingsChanged"/>.</summary>

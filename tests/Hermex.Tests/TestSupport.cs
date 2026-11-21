@@ -32,16 +32,18 @@ internal sealed class StubHostEnvironment : IHostEnvironment
 internal sealed class TestStore : IAsyncDisposable
 {
     private readonly string _directory;
+    private readonly bool _deleteOnDispose;
 
-    private TestStore(SqliteMailStore store, string directory)
+    private TestStore(SqliteMailStore store, string directory, bool deleteOnDispose)
     {
         Store = store;
         _directory = directory;
+        _deleteOnDispose = deleteOnDispose;
     }
 
     public SqliteMailStore Store { get; }
 
-    public static async Task<TestStore> CreateAsync(Action<HermexOptions>? configure = null)
+    public static async Task<TestStore> CreateAsync(Action<HermexOptions>? configure = null, bool deleteOnDispose = true)
     {
         var directory = Path.Combine(Path.GetTempPath(), "hermex-tests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
@@ -56,7 +58,7 @@ internal sealed class TestStore : IAsyncDisposable
             NullLogger<SqliteMailStore>.Instance);
 
         await store.InitializeAsync();
-        return new TestStore(store, directory);
+        return new TestStore(store, directory, deleteOnDispose);
     }
 
     public ValueTask DisposeAsync()
@@ -64,8 +66,11 @@ internal sealed class TestStore : IAsyncDisposable
         Store.Dispose();
         // SQLite pools connections; clear them so the temp file is no longer locked.
         SqliteConnection.ClearAllPools();
-        try { Directory.Delete(_directory, recursive: true); }
-        catch { /* best effort */ }
+        if (_deleteOnDispose)
+        {
+            try { Directory.Delete(_directory, recursive: true); }
+            catch { /* best effort */ }
+        }
         return ValueTask.CompletedTask;
     }
 }

@@ -30,6 +30,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Hermex\Hermex.csproj" />
+    <ProjectReference Include="..\..\src\Hermex.Testing\Hermex.Testing.csproj" />
   </ItemGroup>
 
 </Project>

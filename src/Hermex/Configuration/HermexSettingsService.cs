@@ -58,6 +58,7 @@ internal sealed class HermexSettingsService : IHermexSettings
     {
         lock (_gate)
         {
+            var (allowedRecipients, blockedRecipients) = _options.Relay.DashboardRecipientRules();
             return new HermexSettings
             {
                 SmtpPort = _options.SmtpPort,
@@ -75,6 +76,8 @@ internal sealed class HermexSettingsService : IHermexSettings
                 RelayAutomatic = _options.Relay.AutomaticRelay,
                 RelayHost = _options.Relay.Host,
                 RelayPort = _options.Relay.Port,
+                RelayAllowedRecipients = allowedRecipients.ToList(),
+                RelayBlockedRecipients = blockedRecipients.ToList(),
             };
         }
     }
@@ -217,6 +220,10 @@ internal sealed class HermexSettingsService : IHermexSettings
             ApplyToOptions(proposed);
         }
 
+        // ADR-0003 OD4: relay opened to anyone from the dashboard (start-up is covered by UseHermex).
+        if (source != HermexSettingsChangeSource.Persisted && _options.Relay.Enabled && _options.Relay.RecipientRules().AllowsAnyone)
+            _logger.LogWarning("Hermex: relay is enabled with no recipient allow-list, so captured mail can be relayed to any address.");
+
         if (smtpRestart)
         {
             _logger.LogInformation("Hermex re-binding the SMTP listener after a settings change.");
@@ -262,6 +269,7 @@ internal sealed class HermexSettingsService : IHermexSettings
         _options.Relay.AutomaticRelay = settings.RelayAutomatic;
         _options.Relay.Host = settings.RelayHost;
         _options.Relay.Port = settings.RelayPort;
+        _options.Relay.SetDashboardRecipientRules(settings.RelayAllowedRecipients, settings.RelayBlockedRecipients);
     }
 
     private string? Validate(HermexSettings s)
@@ -286,6 +294,10 @@ internal sealed class HermexSettingsService : IHermexSettings
             return "The relay port must be between 1 and 65535.";
         if (s.RelayEnabled && !_options.Relay.IsHostAllowed(s.RelayHost))
             return "The relay host is not in the host application's list of allowed relay hosts.";
-        return null;
+        // An explicit JSON null (or a hook) can still null them; treat as "no dashboard restriction".
+        s.RelayAllowedRecipients ??= new List<string>();
+        s.RelayBlockedRecipients ??= new List<string>();
+        return HermexRelayOptions.ValidateRecipientPatterns(s.RelayAllowedRecipients, "Allowed relay recipients")
+               ?? HermexRelayOptions.ValidateRecipientPatterns(s.RelayBlockedRecipients, "Blocked relay recipients");
     }
 }

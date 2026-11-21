@@ -82,6 +82,7 @@ internal static class SamplePages
               <button data-kind="html">Send HTML email</button>
               <button data-kind="attachment">Send email + attachment</button>
               <button data-kind="burst">Send 50 marketing emails</button>
+              <button data-kind="fault">Send email that fails</button>
             </div>
 
             <div id="result"></div>
@@ -102,8 +103,8 @@ internal static class SamplePages
                   const data = await res.json().catch(() => ({}));
                   if (!res.ok) throw new Error(data.detail || data.error || res.statusText);
                   result.className = 'ok';
-                  result.textContent = 'Sent ' + (data.sent || 0) +
-                    ' message(s) to the in-process SMTP server. Open the dashboard to view them.';
+                  result.textContent = data.note || ('Sent ' + (data.sent || 0) +
+                    ' message(s) to the in-process SMTP server. Open the dashboard to view them.');
                 } catch (e) {
                   result.className = 'err';
                   result.textContent = 'Failed: ' + e.message;

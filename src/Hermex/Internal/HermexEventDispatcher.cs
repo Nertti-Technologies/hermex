@@ -35,6 +35,15 @@ internal sealed class HermexEventDispatcher
     public Task<bool> DeletingAsync(HermexDeletingContext context) =>
         VetoAsync(context, _events.Deleting, nameof(HermexEvents.OnDeleting));
 
+    public Task<bool> WebhookSendingAsync(HermexWebhookSendingContext context) =>
+        VetoAsync(context, _events.WebhookSending, nameof(HermexEvents.OnWebhookSending));
+
+    public Task<bool> ImportingAsync(HermexImportingContext context) =>
+        VetoAsync(context, _events.Importing, nameof(HermexEvents.OnImporting));
+
+    public Task<bool> FaultsChangingAsync(HermexFaultsChangingContext context) =>
+        VetoAsync(context, _events.FaultsChanging, nameof(HermexEvents.OnFaultsChanging));
+
     public Task SettingsChangedAsync(HermexSettingsChangedContext context) =>
         NotifyAsync(context, _events.SettingsChanged, nameof(HermexEvents.OnSettingsChanged));
 

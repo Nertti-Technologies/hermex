@@ -14,7 +14,7 @@ namespace Hermex.Storage;
 /// to avoid <c>SQLITE_BUSY</c>. Inbox list rows come from indexed metadata columns; full
 /// message detail is reconstructed by re-parsing the stored raw payload on demand.
 /// </summary>
-public sealed class SqliteMailStore : IMailStore, IDisposable
+public sealed class SqliteMailStore : IMailStore, IWaitQueryStore, IDisposable
 {
     private const int LogRetentionCap = 2000;
 
@@ -165,6 +165,7 @@ public sealed class SqliteMailStore : IMailStore, IDisposable
                 insertMessage.Parameters.AddWithValue("@FromAddress", record.FromAddress);
                 insertMessage.Parameters.AddWithValue("@FromDisplay", record.FromDisplay);
                 insertMessage.Parameters.AddWithValue("@ToDisplay", record.ToDisplay);
+                insertMessage.Parameters.AddWithValue("@CcDisplay", (object?)record.CcDisplay ?? DBNull.Value);
                 insertMessage.Parameters.AddWithValue("@Subject", record.Subject);
                 insertMessage.Parameters.AddWithValue("@HasHtml", record.HasHtml);
                 insertMessage.Parameters.AddWithValue("@HasText", record.HasText);
@@ -240,6 +241,50 @@ public sealed class SqliteMailStore : IMailStore, IDisposable
         }
     }
 
+    public Task<IReadOnlyList<long>> DeleteMessagesAsync(IReadOnlyList<long> ids,
+        CancellationToken cancellationToken = default) =>
+        ExecuteForIdsAsync("DELETE FROM Messages WHERE Id IN (SELECT value FROM json_each(@Ids)) RETURNING Id;",
+            ids, null, cancellationToken);
+
+    public Task<IReadOnlyList<long>> SetReadAsync(IReadOnlyList<long> ids, bool isRead,
+        CancellationToken cancellationToken = default) =>
+        ExecuteForIdsAsync(
+            "UPDATE Messages SET IsRead = @IsRead WHERE Id IN (SELECT value FROM json_each(@Ids)) RETURNING Id;",
+            ids, isRead, cancellationToken);
+
+    /// <summary>
+    /// Runs one statement over a list of ids, passed as a single JSON-array parameter (no SQL is built from the
+    /// ids), and returns the ids the statement touched.
+    /// </summary>
+    private async Task<IReadOnlyList<long>> ExecuteForIdsAsync(string sql, IReadOnlyList<long> ids, bool? isRead,
+        CancellationToken cancellationToken)
+    {
+        if (ids.Count == 0)
+            return Array.Empty<long>();
+
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+        await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            await using var command = connection.CreateCommand();
+            command.CommandText = sql;
+            command.Parameters.AddWithValue("@Ids", System.Text.Json.JsonSerializer.Serialize(ids));
+            if (isRead is { } value)
+                command.Parameters.AddWithValue("@IsRead", value);
+
+            var touched = new List<long>(ids.Count);
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                touched.Add(reader.GetInt64(0));
+            return touched;
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
+    }
+
     public async Task<int> ClearMessagesAsync(CancellationToken cancellationToken = default)
     {
         await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
@@ -255,6 +300,105 @@ public sealed class SqliteMailStore : IMailStore, IDisposable
             checkpoint.CommandText = "PRAGMA wal_checkpoint(TRUNCATE);";
             await checkpoint.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             return removed;
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
+    }
+
+    public async Task<MailboxDeleteResult?> DeleteMailboxAsync(long mailboxId,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+        await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            await using var transaction = connection.BeginTransaction();
+
+            string address;
+            await using (var select = connection.CreateCommand())
+            {
+                select.Transaction = transaction;
+                select.CommandText = "SELECT Address FROM Mailboxes WHERE Id = @Id;";
+                select.Parameters.AddWithValue("@Id", mailboxId);
+                if (await select.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not string found)
+                    return null;
+                address = found;
+            }
+
+            if (string.Equals(address, InboxMailboxName, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("INBOX cannot be deleted.");
+
+            // Messages held only by this mailbox (and the INBOX catch-all) go; messages that another
+            // recipient's mailbox also holds stay, and only lose their link to this mailbox (cascade).
+            var deletedIds = new List<long>();
+            await using (var deleteMessages = connection.CreateCommand())
+            {
+                deleteMessages.Transaction = transaction;
+                deleteMessages.CommandText =
+                    "DELETE FROM Messages WHERE Id IN " +
+                    "(SELECT MessageId FROM MailboxMessages WHERE MailboxId = @Id) " +
+                    "AND NOT EXISTS (SELECT 1 FROM MailboxMessages o JOIN Mailboxes b ON b.Id = o.MailboxId " +
+                    "WHERE o.MessageId = Messages.Id AND o.MailboxId <> @Id AND b.Address <> @Inbox) RETURNING Id;";
+                deleteMessages.Parameters.AddWithValue("@Id", mailboxId);
+                deleteMessages.Parameters.AddWithValue("@Inbox", InboxMailboxName);
+                await using var reader = await deleteMessages.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                    deletedIds.Add(reader.GetInt64(0));
+            }
+
+            await using (var deleteMailbox = connection.CreateCommand())
+            {
+                deleteMailbox.Transaction = transaction;
+                deleteMailbox.CommandText = "DELETE FROM Mailboxes WHERE Id = @Id;";
+                deleteMailbox.Parameters.AddWithValue("@Id", mailboxId);
+                await deleteMailbox.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return new MailboxDeleteResult { Address = address, DeletedMessageIds = deletedIds };
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
+    }
+
+    public async Task<StoreResetResult> ResetAsync(CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+        await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            await using var transaction = connection.BeginTransaction();
+
+            async Task<int> ExecuteAsync(string sql)
+            {
+                await using var command = connection.CreateCommand();
+                command.Transaction = transaction;
+                command.CommandText = sql;
+                command.Parameters.AddWithValue("@Inbox", InboxMailboxName);
+                return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            // IMAP invariant (see ImapSession): message ids are IMAP UIDs and must never be reused, so a reset
+            // deletes rows but never touches sqlite_sequence, never recreates the Messages table and never
+            // swaps the database file. That is what lets INBOX keep its UIDVALIDITY across a reset.
+            var result = new StoreResetResult
+            {
+                MessagesDeleted = await ExecuteAsync("DELETE FROM Messages;").ConfigureAwait(false),
+                MailboxesDeleted = await ExecuteAsync("DELETE FROM Mailboxes WHERE Address <> @Inbox;").ConfigureAwait(false),
+                LogsDeleted = await ExecuteAsync("DELETE FROM Logs;").ConfigureAwait(false),
+            };
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+
+            await using var checkpoint = connection.CreateCommand();
+            checkpoint.CommandText = "PRAGMA wal_checkpoint(TRUNCATE);";
+            await checkpoint.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            return result;
         }
         finally
         {
@@ -315,6 +459,24 @@ public sealed class SqliteMailStore : IMailStore, IDisposable
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             mailboxes.Add(ReadMailbox(reader, uidNext));
         return mailboxes;
+    }
+
+    public async Task<Mailbox?> GetMailboxByIdAsync(long mailboxId, CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        var uidNext = await GetUidNextAsync(connection, cancellationToken).ConfigureAwait(false);
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = MailboxSelectSql +
+            " WHERE m.Id = @Id GROUP BY m.Id, m.Address, m.CreatedAtUtc, m.UidValidity;";
+        command.Parameters.AddWithValue("@Id", mailboxId);
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+            ? ReadMailbox(reader, uidNext)
+            : null;
     }
 
     public async Task<Mailbox?> GetMailboxAsync(string address, CancellationToken cancellationToken = default)
@@ -440,7 +602,10 @@ public sealed class SqliteMailStore : IMailStore, IDisposable
     private static async Task<long> GetUidNextAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT COALESCE(MAX(Id), 0) + 1 FROM Messages;";
+        // UIDNEXT must never go backwards, so it comes from AUTOINCREMENT's high-water mark, not MAX(Id):
+        // after a reset or a delete of the newest messages MAX(Id) drops, but the next id does not.
+        command.CommandText =
+            "SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'Messages'), 0) + 1;";
         return Convert.ToInt64(
             await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
             CultureInfo.InvariantCulture);
@@ -599,9 +764,10 @@ public sealed class SqliteMailStore : IMailStore, IDisposable
 
         await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
 
-        int total;
-        await using (var countCommand = connection.CreateCommand())
+        var total = 0;
+        if (!query.SkipCount)
         {
+            await using var countCommand = connection.CreateCommand();
             countCommand.CommandText = "SELECT COUNT(*) FROM Messages" + filter + ";";
             foreach (var p in parameters)
                 countCommand.Parameters.AddWithValue(p.Key, p.Value);
@@ -616,7 +782,7 @@ public sealed class SqliteMailStore : IMailStore, IDisposable
             listCommand.CommandText =
                 "SELECT Id, ReceivedAtUtc, FromDisplay, FromAddress, ToDisplay, Subject, " +
                 "HasHtml, AttachmentCount, RawSize, IsRead FROM Messages" + filter +
-                " ORDER BY Id DESC LIMIT @Limit OFFSET @Offset;";
+                (query.OldestFirst ? " ORDER BY Id ASC" : " ORDER BY Id DESC") + " LIMIT @Limit OFFSET @Offset;";
             foreach (var p in parameters)
                 listCommand.Parameters.AddWithValue(p.Key, p.Value);
             listCommand.Parameters.AddWithValue("@Limit", pageSize);
@@ -817,8 +983,8 @@ public sealed class SqliteMailStore : IMailStore, IDisposable
             FromDisplay = message.From?.DisplayName is { Length: > 0 } name ? name
                 : message.From?.Address ?? envelopeFrom,
             FromAddress = message.From?.Address ?? envelopeFrom,
-            ToDisplay = FormatAddresses(message.To),
-            CcDisplay = FormatAddresses(message.Cc),
+            ToDisplay = MimeAddress.FormatList(message.To),
+            CcDisplay = MimeAddress.FormatList(message.Cc),
             TextBody = message.TextBody,
             HtmlBody = message.HtmlBody,
             MessageIdHeader = message.MessageId,
@@ -854,22 +1020,22 @@ public sealed class SqliteMailStore : IMailStore, IDisposable
         };
     }
 
-    private static string FormatAddresses(IReadOnlyList<MimeAddress> addresses) =>
-        addresses.Count == 0 ? string.Empty : string.Join(", ", addresses.Select(a => a.ToString()));
 
     private static string BuildFilter(MessageQuery query, List<KeyValuePair<string, object>> parameters)
     {
         var clauses = new List<string>();
 
-        if (!string.IsNullOrWhiteSpace(query.Search))
-        {
-            clauses.Add("(Subject LIKE @Search OR FromDisplay LIKE @Search " +
-                        "OR FromAddress LIKE @Search OR ToDisplay LIKE @Search)");
-            parameters.Add(new KeyValuePair<string, object>("@Search", "%" + query.Search.Trim() + "%"));
-        }
+        MessageSearch.AppendClauses(query.Search, clauses, parameters);
+        MessageSearch.AppendCriteria(query.Criteria, clauses, parameters);
 
         if (query.UnreadOnly)
             clauses.Add("IsRead = 0");
+
+        if (query.AfterId is { } afterId)
+        {
+            clauses.Add("Id > @AfterId");
+            parameters.Add(new KeyValuePair<string, object>("@AfterId", afterId));
+        }
 
         if (query.MailboxId is { } mailboxId)
         {
@@ -902,12 +1068,23 @@ public sealed class SqliteMailStore : IMailStore, IDisposable
     /// Applies additive schema migrations. Each statement is idempotent in effect — a
     /// "duplicate column" error simply means the column already exists.
     /// </summary>
-    private static async Task ApplyMigrationsAsync(SqliteConnection connection, CancellationToken cancellationToken)
+    /// <summary>
+    /// Data version kept in <c>PRAGMA user_version</c>. 1 = 2.3.0: <c>CcDisplay</c> backfilled for rows stored
+    /// before the column existed.
+    /// </summary>
+    private const int CurrentDataVersion = 1;
+
+    /// <summary>Rows parsed per backfill transaction (estimate: keeps each write-lock hold short).</summary>
+    private const int BackfillBatchSize = 200;
+
+    private async Task ApplyMigrationsAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {
         string[] migrations =
         {
             "ALTER TABLE Messages ADD COLUMN SecuredWithTls INTEGER NOT NULL DEFAULT 0;",
             "ALTER TABLE Messages ADD COLUMN Transcript TEXT;",
+            // 2.3.0 (ADR-0003 D9): Cc for `cc:` search; backfilled below. NULL = the message has no Cc.
+            "ALTER TABLE Messages ADD COLUMN CcDisplay TEXT;",
         };
 
         foreach (var sql in migrations)
@@ -923,8 +1100,84 @@ public sealed class SqliteMailStore : IMailStore, IDisposable
                 // The column already exists on a database created by a newer schema.
             }
         }
+
+        await using var version = connection.CreateCommand();
+        version.CommandText = "PRAGMA user_version;";
+        var dataVersion = Convert.ToInt32(await version.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
+            CultureInfo.InvariantCulture);
+        if (dataVersion < 1)
+            await BackfillCcDisplayAsync(connection, cancellationToken).ConfigureAwait(false);
+        if (dataVersion < CurrentDataVersion)
+        {
+            await using var setVersion = connection.CreateCommand();
+            setVersion.CommandText = $"PRAGMA user_version = {CurrentDataVersion};"; // constant, not input
+            await setVersion.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
     }
 
+    /// <summary>
+    /// Fills <c>CcDisplay</c> for rows stored before 2.3.0 by re-parsing their raw message. Runs once (guarded
+    /// by <c>user_version</c>, set only after it finishes, so an interrupted run resumes). Worst case: one parse
+    /// per stored message, bounded by retention (default 5,000 messages).
+    /// </summary>
+    private async Task BackfillCcDisplayAsync(SqliteConnection connection, CancellationToken cancellationToken)
+    {
+        var ids = new List<long>();
+        await using (var select = connection.CreateCommand())
+        {
+            select.CommandText = "SELECT Id FROM Messages WHERE CcDisplay IS NULL ORDER BY Id;";
+            await using var reader = await select.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                ids.Add(reader.GetInt64(0));
+        }
+
+        var filled = 0;
+        foreach (var batch in ids.Chunk(BackfillBatchSize))
+        {
+            await using var transaction = connection.BeginTransaction();
+            await using var read = connection.CreateCommand();
+            read.Transaction = transaction;
+            read.CommandText = "SELECT RawData FROM MessageRaw WHERE MessageId = @Id;";
+            var readId = read.Parameters.Add("@Id", SqliteType.Integer);
+
+            await using var update = connection.CreateCommand();
+            update.Transaction = transaction;
+            update.CommandText = "UPDATE Messages SET CcDisplay = @Cc WHERE Id = @Id;";
+            var updateCc = update.Parameters.Add("@Cc", SqliteType.Text);
+            var updateId = update.Parameters.Add("@Id", SqliteType.Integer);
+
+            foreach (var id in batch)
+            {
+                readId.Value = id;
+                if (await read.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not byte[] raw)
+                    continue;
+                string cc;
+                try
+                {
+                    cc = MimeAddress.FormatList(MimeParser.Parse(raw).Cc);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    // One unparseable stored message must not stop the store from opening; it keeps no Cc.
+                    _logger.LogWarning("Hermex: could not read Cc for stored message {Id} ({Error}).", id, ex.GetType().Name);
+                    continue;
+                }
+                if (cc.Length == 0)
+                    continue;
+                updateCc.Value = cc;
+                updateId.Value = id;
+                await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                filled++;
+            }
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        if (filled > 0)
+            _logger.LogInformation("Hermex: filled the Cc search column for {Count} stored message(s).", filled);
+    }
+
+    // Search's before:/after: (MessageSearch) compare ReceivedAtUtc as text against "yyyy-MM-dd", which is
+    // only correct while this stays round-trip ("o") UTC text. Changing the format breaks date search.
     private static string FormatDate(DateTimeOffset value) =>
         value.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture);
 
@@ -953,6 +1206,8 @@ public sealed class SqliteMailStore : IMailStore, IDisposable
     private const string SchemaSql = """
         PRAGMA journal_mode=WAL;
 
+        -- Messages.Id is the IMAP UID. AUTOINCREMENT guarantees ids are never reused, which IMAP needs
+        -- (RFC 9051 §2.3.1.1); ResetAsync and every delete keep sqlite_sequence. See ImapSession.
         CREATE TABLE IF NOT EXISTS Messages (
             Id              INTEGER PRIMARY KEY AUTOINCREMENT,
             SessionId       TEXT    NOT NULL,
@@ -970,7 +1225,8 @@ public sealed class SqliteMailStore : IMailStore, IDisposable
             IsRead          INTEGER NOT NULL DEFAULT 0,
             RemoteEndPoint  TEXT    NOT NULL,
             SecuredWithTls  INTEGER NOT NULL DEFAULT 0,
-            Transcript      TEXT
+            Transcript      TEXT,
+            CcDisplay       TEXT
         );
 
         CREATE TABLE IF NOT EXISTS MessageRaw (
@@ -1011,17 +1267,18 @@ public sealed class SqliteMailStore : IMailStore, IDisposable
         CREATE INDEX IF NOT EXISTS IX_Messages_IsRead         ON Messages(IsRead);
         CREATE INDEX IF NOT EXISTS IX_Logs_Id_Desc            ON Logs(Id DESC);
         CREATE INDEX IF NOT EXISTS IX_MailboxMessages_Message ON MailboxMessages(MessageId);
+        CREATE INDEX IF NOT EXISTS IX_Messages_ReceivedAtUtc  ON Messages(ReceivedAtUtc);
         """;
 
     private const string InsertMessageSql = """
         INSERT INTO Messages
             (SessionId, ReceivedAtUtc, EnvelopeFrom, EnvelopeTo, FromAddress, FromDisplay,
              ToDisplay, Subject, HasHtml, HasText, RawSize, AttachmentCount, IsRead,
-             RemoteEndPoint, SecuredWithTls, Transcript)
+             RemoteEndPoint, SecuredWithTls, Transcript, CcDisplay)
         VALUES
             (@SessionId, @ReceivedAtUtc, @EnvelopeFrom, @EnvelopeTo, @FromAddress, @FromDisplay,
              @ToDisplay, @Subject, @HasHtml, @HasText, @RawSize, @AttachmentCount, 0,
-             @RemoteEndPoint, @SecuredWithTls, @Transcript)
+             @RemoteEndPoint, @SecuredWithTls, @Transcript, @CcDisplay)
         RETURNING Id;
         """;
 }

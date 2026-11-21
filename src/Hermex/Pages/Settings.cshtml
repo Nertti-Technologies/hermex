@@ -3,6 +3,10 @@
 @{
     ViewData["Title"] = "Settings";
     var editable = HermexOptions.AllowRuntimeSettings;
+    // The host's fixed relay limits (ADR-0003 A8): shown read-only; the textareas can only narrow them.
+    var hostAllowed = string.Join(", ", HermexOptions.Relay.AllowedRecipients);
+    var hostBlocked = string.Join(", ", HermexOptions.Relay.BlockedRecipients);
+    var confirmWord = Hermex.Dashboard.HermexApiEndpoints.ResetRequest.ConfirmationText;
 }
 
 <div class="m4d-page">
@@ -138,6 +142,21 @@
                 <input class="m4d-input" type="number" id="set-relayPort" min="1" max="65535" />
             </div>
 
+            <div class="m4d-field">
+                <label for="set-relayAllowedRecipients">Relay only to</label>
+                <textarea class="m4d-input m4d-textarea" id="set-relayAllowedRecipients" rows="3" spellcheck="false"
+                          placeholder="*@@example.test&#10;qa+*@@corp.test"></textarea>
+                <span class="m4d-field__hint">One pattern per line; * and ? are wildcards. Narrows the host's list; empty adds no limit.</span>
+                <span class="m4d-field__hint">Host limit (set in code): @(hostAllowed.Length > 0 ? hostAllowed : "none, any recipient")</span>
+            </div>
+            <div class="m4d-field">
+                <label for="set-relayBlockedRecipients">Never relay to</label>
+                <textarea class="m4d-input m4d-textarea" id="set-relayBlockedRecipients" rows="3" spellcheck="false"
+                          placeholder="*@@customer-domain.com"></textarea>
+                <span class="m4d-field__hint">Blocked beats allowed. Applies to manual and automatic relay.</span>
+                <span class="m4d-field__hint">Always blocked by the host: @(hostBlocked.Length > 0 ? hostBlocked : "none")</span>
+            </div>
+
             <div class="m4d-field m4d-field--wide">
                 <label>Options</label>
                 <label class="m4d-check"><input type="checkbox" id="set-enableImap" /> Enable the IMAP server</label>
@@ -153,10 +172,73 @@
         {
             <div class="m4d-form__actions">
                 <button type="button" class="m4d-btn m4d-btn--primary" id="m4d-settings-save">Save settings</button>
-                <button type="button" class="m4d-btn" id="m4d-settings-reload">Reset</button>
+                <button type="button" class="m4d-btn" id="m4d-settings-reload">Discard changes</button>
                 <span class="m4d-form__status" id="m4d-settings-result"></span>
             </div>
         }
+    </section>
+
+    <section class="m4d-card m4d-faults" style="margin-top:18px" id="m4d-faults" hidden aria-labelledby="m4d-faults-title">
+        <header class="m4d-card__head">
+            <h2 class="m4d-card__title" id="m4d-faults-title">SMTP faults</h2>
+            <span class="m4d-level" id="m4d-faults-state"></span>
+        </header>
+        <p class="m4d-card__lead">
+            Make the SMTP server fail on purpose to test how your application copes: reject a step with a reply code,
+            slow it down, or drop the connection. Rules run in order; the first that fires at a step wins. Changes here
+            last until the host restarts. A message can also ask for its own fault with an
+            <code>X-Hermex-Fault: 451</code>, <code>drop</code> or <code>delay=5s</code> header<span id="m4d-faults-header-off" hidden> (turned off by the host)</span>.
+        </p>
+        <p class="m4d-card__lead m4d-faults__note" id="m4d-faults-note" hidden></p>
+        <fieldset class="m4d-fieldset" id="m4d-faults-fields">
+            <label class="m4d-check"><input type="checkbox" id="m4d-faults-enabled" /> Inject faults</label>
+            <div class="m4d-faults__scroll">
+                <table class="m4d-table m4d-faults__table">
+                    <thead>
+                        <tr>
+                            <th>Step</th>
+                            <th>Address pattern</th>
+                            <th>Reply</th>
+                            <th>Delay (ms)</th>
+                            <th>Chance %</th>
+                            <th>Every Nth</th>
+                            <th><span class="m4d-sr-only">Remove</span></th>
+                        </tr>
+                    </thead>
+                    <tbody id="m4d-faults-rules"></tbody>
+                </table>
+            </div>
+            <div class="m4d-form__actions">
+                <button type="button" class="m4d-btn" id="m4d-faults-add">
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+                    Add rule
+                </button>
+                <button type="button" class="m4d-btn m4d-btn--primary" id="m4d-faults-save">Apply faults</button>
+                <span class="m4d-form__status" id="m4d-faults-result" role="status"></span>
+            </div>
+        </fieldset>
+    </section>
+
+    <section class="m4d-card m4d-card--danger" style="margin-top:18px" aria-labelledby="m4d-reset-title">
+        <header class="m4d-card__head">
+            <h2 class="m4d-card__title" id="m4d-reset-title">Reset Hermex</h2>
+        </header>
+        <p class="m4d-card__lead">
+            Deletes every message, every mailbox except INBOX and all diagnostic logs. Settings are kept.
+            Mail clients connected over IMAP are disconnected from deleted mailboxes. This cannot be undone.
+        </p>
+        <div class="m4d-reset">
+            <div class="m4d-field">
+                <label for="m4d-reset-confirm">Type @confirmWord to confirm</label>
+                <input type="text" class="m4d-input" id="m4d-reset-confirm" autocomplete="off" spellcheck="false"
+                       data-confirm-word="@confirmWord" />
+            </div>
+            <button type="button" class="m4d-btn m4d-btn--danger" id="m4d-reset" disabled>
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 3v5h5" /></svg>
+                <span>Reset Hermex</span>
+            </button>
+            <span class="m4d-form__status" id="m4d-reset-result" role="status"></span>
+        </div>
     </section>
 </div>
 
