@@ -27,6 +27,7 @@ internal sealed class SmtpSession
     private readonly IReceivedMailSink _sink;
     private readonly IHermexEventLog _eventLog;
     private readonly X509Certificate2? _tlsCertificate;
+    private readonly FaultInjector _faults;
     private readonly string _sessionId;
     private readonly string _remoteEndPoint;
     private readonly List<string> _transcript = new();
@@ -43,8 +44,9 @@ internal sealed class SmtpSession
     private readonly List<string> _recipients = new();
 
     public SmtpSession(TcpClient client, HermexOptions options, HermexRuntimeState state,
-        IReceivedMailSink sink, IHermexEventLog eventLog, X509Certificate2? tlsCertificate)
+        IReceivedMailSink sink, IHermexEventLog eventLog, X509Certificate2? tlsCertificate, FaultInjector faults)
     {
+        _faults = faults;
         _client = client;
         _options = options;
         _state = state;
@@ -78,6 +80,9 @@ internal sealed class SmtpSession
             _eventLog.Info("Smtp",
                 $"Connection opened from {_remoteEndPoint}{(_securedWithTls ? " (implicit TLS)" : string.Empty)}.",
                 _sessionId, _remoteEndPoint);
+            // A connect-stage fault ends the session whatever it replies (a greeting cannot be retried).
+            if (await ApplyFaultAsync(_faults.Check(HermexSmtpStage.Connect, null), serverToken).ConfigureAwait(false) is not null)
+                return;
             await SendAsync($"220 {_options.ServerHostName} Hermex SMTP service ready", serverToken).ConfigureAwait(false);
 
             while (!serverToken.IsCancellationRequested)
@@ -163,6 +168,8 @@ internal sealed class SmtpSession
 
     private async Task<bool> HandleHeloAsync(string args, bool extended, CancellationToken ct)
     {
+        if (await ApplyFaultAsync(_faults.Check(HermexSmtpStage.Helo, null), ct).ConfigureAwait(false) is { } helo)
+            return helo;
         _heloName = string.IsNullOrWhiteSpace(args) ? null : args.Trim();
         ResetTransaction();
 
@@ -258,6 +265,8 @@ internal sealed class SmtpSession
                 ct).ConfigureAwait(false);
             return true;
         }
+        if (await ApplyFaultAsync(_faults.Check(HermexSmtpStage.MailFrom, path), ct).ConfigureAwait(false) is { } mail)
+            return mail;
 
         ResetTransaction();
         _mailFrom = path;
@@ -290,6 +299,9 @@ internal sealed class SmtpSession
             await SendAsync("501 5.1.3 A recipient address is required", ct).ConfigureAwait(false);
             return true;
         }
+
+        if (await ApplyFaultAsync(_faults.Check(HermexSmtpStage.RcptTo, path), ct).ConfigureAwait(false) is { } rcpt)
+            return rcpt;
 
         _recipients.Add(path);
         await SendAsync("250 2.1.5 Recipient OK", ct).ConfigureAwait(false);
@@ -366,6 +378,17 @@ internal sealed class SmtpSession
         Record($"C: [message body — {raw.Length} bytes]");
         Record("C: .");
 
+        // A rule first, then the message's own X-Hermex-Fault header (also after a delay-only rule).
+        // A reply or drop means the message is not stored.
+        var faulted = await ApplyFaultAsync(_faults.Check(HermexSmtpStage.Data, null), ct).ConfigureAwait(false)
+            ?? await ApplyFaultAsync(_faults.FromHeader(raw, _sessionId), ct).ConfigureAwait(false);
+        if (faulted is not null)
+        {
+            _state.OnMessageRejected();
+            ResetTransaction();
+            return faulted.Value;
+        }
+
         var message = new ReceivedMessage
         {
             SessionId = _sessionId,
@@ -401,8 +424,32 @@ internal sealed class SmtpSession
         return true;
     }
 
+    /// <summary>
+    /// Applies a fault (ADR-0003 D11): waits, then drops or replies. Returns null when the command should carry on
+    /// normally (no fault, or a delay only), true when a failure reply was sent, false when the session must end.
+    /// </summary>
+    private async Task<bool?> ApplyFaultAsync(FaultAction? fault, CancellationToken ct)
+    {
+        if (fault is null)
+            return null;
+        _eventLog.Warning("Faults", fault.Describe(), _sessionId, _remoteEndPoint);
+        if (fault.Delay is { } delay)
+            await Task.Delay(delay, ct).ConfigureAwait(false);
+        if (fault.Drop)
+        {
+            Record("S: [connection dropped: injected fault]");
+            return false;
+        }
+        if (fault.ReplyCode is null)
+            return null;
+        await SendAsync(fault.Reply, ct).ConfigureAwait(false);
+        return !fault.ClosesConnection;
+    }
+
     private async Task<bool> HandleAuthAsync(string args, CancellationToken ct)
     {
+        if (await ApplyFaultAsync(_faults.Check(HermexSmtpStage.Auth, null), ct).ConfigureAwait(false) is { } auth)
+            return auth;
         if (_authenticated)
         {
             await SendAsync("503 5.5.1 Already authenticated", ct).ConfigureAwait(false);

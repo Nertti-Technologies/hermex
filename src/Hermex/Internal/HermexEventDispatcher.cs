@@ -38,6 +38,9 @@ internal sealed class HermexEventDispatcher
     public Task<bool> WebhookSendingAsync(HermexWebhookSendingContext context) =>
         VetoAsync(context, _events.WebhookSending, nameof(HermexEvents.OnWebhookSending));
 
+    public Task<bool> FaultsChangingAsync(HermexFaultsChangingContext context) =>
+        VetoAsync(context, _events.FaultsChanging, nameof(HermexEvents.OnFaultsChanging));
+
     public Task SettingsChangedAsync(HermexSettingsChangedContext context) =>
         NotifyAsync(context, _events.SettingsChanged, nameof(HermexEvents.OnSettingsChanged));
 

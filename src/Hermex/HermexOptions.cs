@@ -120,6 +120,11 @@ public sealed class HermexOptions
     /// <summary>Optional signed HTTP notices to other services when a message is captured (ADR-0003 D4).</summary>
     public HermexWebhookOptions Webhooks { get; } = new();
 
+    // ----------------------------------------------------------------- Faults
+
+    /// <summary>SMTP fault injection for testing failure handling; Development only by default (ADR-0003 D11).</summary>
+    public HermexFaultOptions Faults { get; } = new();
+
     // ----------------------------------------------------------------- Storage
 
     /// <summary>
@@ -246,6 +251,7 @@ public sealed class HermexOptions
 
         Relay.Validate();
         Webhooks.Validate();
+        Faults.Validate(SessionTimeout);
 
         // ResolveListenAddress throws if the address is malformed.
         _ = ResolveListenAddress();

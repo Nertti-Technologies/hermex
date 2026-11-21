@@ -62,6 +62,7 @@ public static class HermexServiceCollectionExtensions
 
         // Background workers. The SMTP and IMAP listeners are also registered as concrete
         // singletons so the settings service can re-bind them when a port changes at runtime.
+        services.AddSingleton<FaultInjector>();
         services.AddSingleton<SmtpServerService>();
         services.AddSingleton<ImapServerService>();
         services.AddSingleton<IHostedService>(sp => sp.GetRequiredService<SmtpServerService>());

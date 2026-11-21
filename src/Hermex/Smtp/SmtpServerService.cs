@@ -15,6 +15,7 @@ internal sealed class SmtpServerService : RestartableListenerService
     private readonly HermexOptions _options;
     private readonly HermexRuntimeState _state;
     private readonly IReceivedMailSink _sink;
+    private readonly FaultInjector _faults;
     private readonly IHermexEventLog _eventLog;
     private readonly ILogger<SmtpServerService> _logger;
     private readonly SemaphoreSlim _connectionLimiter;
@@ -25,8 +26,10 @@ internal sealed class SmtpServerService : RestartableListenerService
         HermexRuntimeState state,
         IReceivedMailSink sink,
         IHermexEventLog eventLog,
+        FaultInjector faults,
         ILogger<SmtpServerService> logger)
     {
+        _faults = faults;
         _options = options;
         _state = state;
         _sink = sink;
@@ -129,7 +132,7 @@ internal sealed class SmtpServerService : RestartableListenerService
             acquired = true;
             _state.OnConnectionAccepted();
 
-            var session = new SmtpSession(client, _options, _state, _sink, _eventLog, _tlsCertificate);
+            var session = new SmtpSession(client, _options, _state, _sink, _eventLog, _tlsCertificate, _faults);
             await session.RunAsync(runToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) { /* restarting or shutting down */ }

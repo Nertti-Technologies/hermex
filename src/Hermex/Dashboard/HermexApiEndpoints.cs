@@ -444,6 +444,31 @@ internal static class HermexApiEndpoints
             return Results.Ok(new { cleared });
         }).WithHermexTier(Admin, authorization);
 
+        // ---- SMTP fault injection (ADR-0003 D11); in memory only ------------
+        api.MapGet("/faults", (FaultInjector faults) => Results.Json(faults.Current))
+            .WithHermexTier(Admin, authorization);
+
+        api.MapPut("/faults", async (FaultsUpdate update, FaultInjector faults, HermexEventDispatcher events,
+            CancellationToken ct) =>
+        {
+            switch (faults.Validate(update.Enabled, update.Rules))
+            {
+                case { Forbidden: true } refused: return Forbidden(refused.Error);
+                case { } invalid: return Results.BadRequest(new { error = invalid.Error });
+            }
+            var changing = new HermexFaultsChangingContext
+            {
+                Enabled = update.Enabled,
+                Rules = FaultInjector.CopyAll(update.Rules),
+                HttpContext = events.HttpContext,
+                CancellationToken = ct,
+            };
+            if (!await events.FaultsChangingAsync(changing))
+                return Forbidden(changing.RejectionReason);
+            faults.Apply(update.Enabled, update.Rules);
+            return Results.Ok(faults.Current);
+        }).WithHermexTier(Admin, authorization);
+
         // ---- runtime-editable settings ------------------------------------
         api.MapGet("/settings", (HermexSettingsService settings) =>
             Results.Json(settings.GetCurrent()))
@@ -461,6 +486,9 @@ internal static class HermexApiEndpoints
             };
         }).WithHermexTier(Admin, authorization);
     }
+
+    /// <summary>Body of <c>PUT /faults</c>: the switch and the full rule list, replacing the current ones.</summary>
+    internal sealed record FaultsUpdate(bool Enabled, List<HermexFaultRule>? Rules);
 
     /// <summary>Body of <c>POST /reset</c>.</summary>
     internal sealed record ResetRequest(string? Confirm)

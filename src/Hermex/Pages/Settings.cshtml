@@ -160,6 +160,47 @@
         }
     </section>
 
+    <section class="m4d-card m4d-faults" style="margin-top:18px" id="m4d-faults" hidden aria-labelledby="m4d-faults-title">
+        <header class="m4d-card__head">
+            <h2 class="m4d-card__title" id="m4d-faults-title">SMTP faults</h2>
+            <span class="m4d-level" id="m4d-faults-state"></span>
+        </header>
+        <p class="m4d-card__lead">
+            Make the SMTP server fail on purpose to test how your application copes: reject a step with a reply code,
+            slow it down, or drop the connection. Rules run in order; the first that fires at a step wins. Changes here
+            last until the host restarts. A message can also ask for its own fault with an
+            <code>X-Hermex-Fault: 451</code>, <code>drop</code> or <code>delay=5s</code> header<span id="m4d-faults-header-off" hidden> (turned off by the host)</span>.
+        </p>
+        <p class="m4d-card__lead m4d-faults__note" id="m4d-faults-note" hidden></p>
+        <fieldset class="m4d-fieldset" id="m4d-faults-fields">
+            <label class="m4d-check"><input type="checkbox" id="m4d-faults-enabled" /> Inject faults</label>
+            <div class="m4d-faults__scroll">
+                <table class="m4d-table m4d-faults__table">
+                    <thead>
+                        <tr>
+                            <th>Step</th>
+                            <th>Address pattern</th>
+                            <th>Reply</th>
+                            <th>Delay (ms)</th>
+                            <th>Chance %</th>
+                            <th>Every Nth</th>
+                            <th><span class="m4d-sr-only">Remove</span></th>
+                        </tr>
+                    </thead>
+                    <tbody id="m4d-faults-rules"></tbody>
+                </table>
+            </div>
+            <div class="m4d-form__actions">
+                <button type="button" class="m4d-btn" id="m4d-faults-add">
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+                    Add rule
+                </button>
+                <button type="button" class="m4d-btn m4d-btn--primary" id="m4d-faults-save">Apply faults</button>
+                <span class="m4d-form__status" id="m4d-faults-result" role="status"></span>
+            </div>
+        </fieldset>
+    </section>
+
     <section class="m4d-card m4d-card--danger" style="margin-top:18px" aria-labelledby="m4d-reset-title">
         <header class="m4d-card__head">
             <h2 class="m4d-card__title" id="m4d-reset-title">Reset Hermex</h2>

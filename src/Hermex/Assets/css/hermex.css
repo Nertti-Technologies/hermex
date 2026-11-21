@@ -861,6 +861,15 @@ a:hover { text-decoration: underline; }
     font-weight: 700;
 }
 .m4d-level--debug   { background: var(--surface-3); color: var(--text-muted); }
+/* SMTP faults on the Settings page (ADR-0003 D11) */
+.m4d-faults__scroll { overflow-x: auto; margin: 4px 0 8px; }
+.m4d-faults__table { min-width: 720px; }
+.m4d-faults__table td { padding: 6px 8px; vertical-align: middle; }
+.m4d-faults__table .m4d-input { min-width: 0; width: 100%; padding: 6px 8px; font-size: 12.5px; }
+.m4d-faults__table td:nth-child(2) { min-width: 170px; }
+.m4d-faults__note { color: var(--warning); }
+.m4d-faults code { font-size: 12px; }
+
 /* Webhook deliveries on the Logs page (ADR-0003 D4) */
 .m4d-webhooks { margin-bottom: 20px; }
 .m4d-webhooks__head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; padding: 18px 20px 8px; }

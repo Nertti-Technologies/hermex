@@ -51,6 +51,12 @@ public class HermexEvents
     /// </summary>
     public Func<HermexWebhookSendingContext, Task> OnWebhookSending { get; set; } = _ => Task.CompletedTask;
 
+    /// <summary>
+    /// Veto hook: before SMTP fault rules are changed from the dashboard or API (ADR-0003 D11). Use it to audit who
+    /// changed them (<see cref="HermexVetoContext.HttpContext"/>) or to refuse the change.
+    /// </summary>
+    public Func<HermexFaultsChangingContext, Task> OnFaultsChanging { get; set; } = _ => Task.CompletedTask;
+
     /// <summary>Notification hook: after settings were applied.</summary>
     public Func<HermexSettingsChangedContext, Task> OnSettingsChanged { get; set; } = _ => Task.CompletedTask;
 
@@ -72,6 +78,9 @@ public class HermexEvents
 
     /// <summary>Invokes <see cref="OnWebhookSending"/>.</summary>
     public virtual Task WebhookSending(HermexWebhookSendingContext context) => OnWebhookSending(context);
+
+    /// <summary>Runs <see cref="OnFaultsChanging"/>; override in a subclass registered as a service.</summary>
+    public virtual Task FaultsChanging(HermexFaultsChangingContext context) => OnFaultsChanging(context);
 
     /// <summary>Invokes <see cref="OnSettingsChanged"/>.</summary>
     public virtual Task SettingsChanged(HermexSettingsChangedContext context) => OnSettingsChanged(context);
@@ -101,6 +110,16 @@ public abstract class HermexVetoContext
         IsRejected = true;
         RejectionReason = string.IsNullOrWhiteSpace(reason) ? "Rejected by the host application." : reason;
     }
+}
+
+/// <summary>Context for <see cref="HermexEvents.OnFaultsChanging"/>: the switch and rules about to replace the current ones.</summary>
+public sealed class HermexFaultsChangingContext : HermexVetoContext
+{
+    /// <summary>Whether fault injection will be on.</summary>
+    public required bool Enabled { get; init; }
+
+    /// <summary>The rules that will apply (copies; changing them has no effect).</summary>
+    public required IReadOnlyList<HermexFaultRule> Rules { get; init; }
 }
 
 /// <summary>Context for <see cref="HermexEvents.OnSettingsChanging"/>.</summary>
